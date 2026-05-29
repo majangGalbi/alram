@@ -34,7 +34,6 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
-        # 스케줄러 자체에 한국 시간대 강제 설정
         self.scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
 
     async def setup_hook(self):
@@ -64,70 +63,79 @@ async def schedule_notification(
     멘션: discord.Member, 
     메시지: str
 ):
-    # 3초 제한 우회를 위해 디스코드 응답 연장
-    await interaction.response.defer(ephemeral=False)
+    # 🚨 [가장 중요] 3초 타임아웃을 피하기 위해 함수가 시작하자마자 아무 조건문 없이 defer를 먼저 실행합니다.
+    # 대기 상태를 안전하게 확보하기 위해 ephemeral=True로 설정합니다.
+    await interaction.response.defer(ephemeral=True)
     
-    seoul_tz = pytz.timezone("Asia/Seoul")
-    current_time = datetime.now(seoul_tz)
+    try:
+        seoul_tz = pytz.timezone("Asia/Seoul")
+        current_time = datetime.now(seoul_tz)
 
-    # 해외 서버(Render) 시차 문제를 해결하기 위해 TIMEZONE 설정을 확실히 주입
-    parsed_date = dateparser.parse(
-        일시, 
-        languages=['ko'], 
-        settings={
-            'RELATIVE_BASE': current_time.replace(tzinfo=None),
-            'TIMEZONE': 'Asia/Seoul',  # 입력된 텍스트를 한국 시간으로 해석
-            'TO_TIMEZONE': 'Asia/Seoul' # 결과물도 한국 시간으로 고정
-        }
-    )
-    
-    # 파싱에 실패한 경우
-    if not parsed_date:
-        await interaction.followup.send(
-            "❌ 날짜/시간 형식을 인식할 수 없습니다.\n"
-            "**올바른 예시:**\n"
-            "• `2026년 5월 23일 오후 1시 30분 0초`\n"
-            "• `오늘 오후 10시`, `10분 뒤`, `내일 오전 9시`", 
-            ephemeral=True
+        # 시간 해석
+        parsed_date = dateparser.parse(
+            일시, 
+            languages=['ko'], 
+            settings={
+                'RELATIVE_BASE': current_time.replace(tzinfo=None),
+                'TIMEZONE': 'Asia/Seoul',
+                'TO_TIMEZONE': 'Asia/Seoul'
+            }
         )
-        return
+        
+        # 파싱 실패 시
+        if not parsed_date:
+            await interaction.followup.send(
+                "❌ 날짜/시간 형식을 인식할 수 없습니다.\n"
+                "**올바른 예시:**\n"
+                "• `2026년 5월 23일 오후 1시 30분`\n"
+                "• `오늘 오후 10시`, `10분 뒤`"
+            )
+            return
 
-    # 타임존 정보가 꼬이지 않도록 KST 타임존 확정 주입
-    run_date = seoul_tz.localize(parsed_date.replace(tzinfo=None))
-    
-    # 과거의 시간인지 검증
-    if run_date < current_time:
-        await interaction.followup.send(
-            f"❌ 현재 시간보다 이전 시간은 예약할 수 없습니다.\n"
-            f"⏰ **봇이 인식한 현재 한국 시간:** {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"⏳ **입력하신 예약 시간:** {run_date.strftime('%Y-%m-%d %H:%M:%S')}", 
-            ephemeral=True
+        # KST 타임존 확정
+        run_date = seoul_tz.localize(parsed_date.replace(tzinfo=None))
+        
+        # 과거 시간 검증
+        if run_date < current_time:
+            await interaction.followup.send(
+                f"❌ 현재 시간보다 이전 시간은 예약할 수 없습니다.\n"
+                f"⏰ **현재 한국 시간:** {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"⏳ **입력하신 예약 시간:** {run_date.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            return
+
+        # 4자리 고유 ID 생성
+        job_id = str(uuid.uuid4())[:4]
+
+        bot.scheduler.add_job(
+            send_ping,
+            'date',
+            run_date=run_date,
+            args=[interaction.channel_id, 멘션.mention, 메시지],
+            id=job_id,
+            name=f"{멘션.display_name} | {메시지}"
         )
-        return
+        
+        # 시간 포맷팅
+        formatted_time = run_date.strftime("%Y년 %m월 %d일 %p %I시 %M분 %S초")
+        formatted_time = formatted_time.replace("AM", "오전").replace("PM", "오후")
 
-    # 4자리 고유 ID 생성
-    job_id = str(uuid.uuid4())[:4]
-
-    bot.scheduler.add_job(
-        send_ping,
-        'date',
-        run_date=run_date,
-        args=[interaction.channel_id, 멘션.mention, 메시지],
-        id=job_id,
-        name=f"{멘션.display_name} | {메시지}"
-    )
-    
-    # 깔끔하게 포맷팅하여 예약 확인 메시지 전송
-    formatted_time = run_date.strftime("%Y년 %m월 %d일 %p %I시 %M분 %S초")
-    formatted_time = formatted_time.replace("AM", "오전").replace("PM", "오후")
-
-    await interaction.followup.send(
-        f"✅ 알림 예약 완료!\n"
-        f"🆔 **예약 번호(ID):** {job_id}\n"
-        f"📅 **일시:** {formatted_time}\n"
-        f"👤 **대상:** {멘션.mention}\n"
-        f"💬 **내용:** {메시지}"
-    )
+        # 💡 defer 이후에는 followup.send로 결과 전송
+        await interaction.followup.send(
+            f"✅ 알림 예약 완료!\n"
+            f"🆔 **예약 번호(ID):** {job_id}\n"
+            f"📅 **일시:** {formatted_time}\n"
+            f"👤 **대상:** {멘션.mention}\n"
+            f"💬 **내용:** {메시지}"
+        )
+        
+    except Exception as e:
+        print(f"오류 발생: {e}")
+        # 만약 에러가 나더라도 디스코드 창에 알림을 남김
+        try:
+            await interaction.followup.send("❌ 내부 처리 중 오류가 발생했습니다. 다시 시도해 주세요.")
+        except:
+            pass
 
 # [4] 슬래시 명령어: /예약목록
 @bot.tree.command(name="예약목록", description="현재 대기 중인 알림 예약 목록을 보여줍니다.")
@@ -175,7 +183,5 @@ async def on_ready():
 
 # [6] 봇 실제 구동부
 keep_alive()
-
-# .env에서 불러온 토큰으로 안전하게 로그인
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 bot.run(TOKEN)
