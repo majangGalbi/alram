@@ -1,0 +1,6 @@
+discord.py
+APScheduler
+pytz
+Flask
+python-dotenv
+dateparser
