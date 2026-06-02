@@ -4,3 +4,4 @@ pytz
 Flask
 python-dotenv
 dateparser
+sqlalchemy
