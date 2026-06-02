@@ -532,6 +532,13 @@ BOT_VERSION = "v1.0"
 async def on_ready():
     print(f"✅ {bot.user.name} 봇이 로그인 성공했습니다! ({BOT_VERSION})")
 
+@bot.command(name="sync")
+@commands.is_owner()
+async def sync_commands(ctx):
+    """슬래시 명령어를 현재 서버에 즉시 동기화합니다. (봇 소유자 전용)"""
+    synced = await bot.tree.sync(guild=ctx.guild)
+    await ctx.send(f"✅ {len(synced)}개 명령어를 이 서버에 동기화했습니다.")
+
 # [7] 봇 실제 구동부
 keep_alive()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
