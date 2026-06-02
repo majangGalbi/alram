@@ -270,9 +270,8 @@ class CancelSelect(discord.ui.Select):
 
         # 소유권 재확인 (select가 열린 뒤 시간이 지났을 수 있으므로)
         owner_id = bot.job_owners.get(job_id)
-        is_admin = interaction.user.guild_permissions.administrator
 
-        if owner_id and owner_id != interaction.user.id and not is_admin:
+        if owner_id and owner_id != interaction.user.id:
             await interaction.response.send_message(
                 "❌ 본인이 만든 예약이 아닙니다.", ephemeral=True
             )
@@ -406,30 +405,30 @@ async def schedule_notification(
             pass
 
 # [6] 슬래시 명령어: /예약목록
-@bot.tree.command(name="예약목록", description="현재 대기 중인 알림 예약 목록을 보여줍니다.")
+@bot.tree.command(name="예약목록", description="내 알림 예약 목록을 보여줍니다.")
 async def list_jobs(interaction: discord.Interaction):
-    jobs = bot.scheduler.get_jobs()
+    all_jobs = bot.scheduler.get_jobs()
+    jobs = [j for j in all_jobs if bot.job_owners.get(j.id) == interaction.user.id]
 
     if not jobs:
-        await interaction.response.send_message("📅 현재 대기 중인 알림 예약을 찾을 수 없습니다.", ephemeral=True)
+        await interaction.response.send_message("📅 현재 대기 중인 예약이 없습니다.", ephemeral=True)
         return
 
-    embed = discord.Embed(title="⏰ 현재 알림 예약 목록", color=discord.Color.blue())
-
+    embed = discord.Embed(
+        title="⏰ 내 알림 예약 목록",
+        description=f"총 {len(jobs)}건",
+        color=discord.Color.blue()
+    )
     for job in jobs:
         try:
             target, msg = job.name.split(" | ", 1)
         except ValueError:
             target, msg = "알 수 없음", "내용 없음"
 
-        if job.next_run_time is None:
-            run_time_str = "시간 정보 없음"
-        else:
-            run_time_str = format_korean_time(job.next_run_time)
-
+        time_str = format_korean_time(job.next_run_time) if job.next_run_time else "시간 정보 없음"
         embed.add_field(
-            name=f"🆔 번호(ID): `{job.id}`",
-            value=f"📅 **일시:** {run_time_str}\n👤 **대상:** {target}\n💬 **내용:** {msg}",
+            name=f"`{job.id}`  👤 {target}",
+            value=f"📅 {time_str}\n💬 {msg}",
             inline=False
         )
 
@@ -438,14 +437,8 @@ async def list_jobs(interaction: discord.Interaction):
 # [6] 슬래시 명령어: /예약취소
 @bot.tree.command(name="예약취소", description="내 예약 목록을 보고 선택해서 취소합니다.")
 async def cancel_job(interaction: discord.Interaction):
-    is_admin = interaction.user.guild_permissions.administrator
     all_jobs = bot.scheduler.get_jobs()
-
-    # 관리자는 전체, 일반 유저는 본인 예약만
-    if is_admin:
-        jobs = all_jobs
-    else:
-        jobs = [j for j in all_jobs if bot.job_owners.get(j.id) == interaction.user.id]
+    jobs = [j for j in all_jobs if bot.job_owners.get(j.id) == interaction.user.id]
 
     if not jobs:
         await interaction.response.send_message(
