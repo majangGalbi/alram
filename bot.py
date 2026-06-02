@@ -208,7 +208,98 @@ def parse_korean_time(text: str, base_time: datetime):
     }
     return dateparser.parse(text, languages=['ko'], settings=settings)
 
-# [3] 슬래시 명령어: /예약
+# [3] 예약취소 UI — Select Menu
+class CancelSelect(discord.ui.Select):
+    def __init__(self, jobs):
+        options = []
+        for job in jobs[:25]:  # Discord 최대 25개 제한
+            try:
+                target, msg = job.name.split(" | ", 1)
+            except ValueError:
+                target, msg = "알 수 없음", "내용 없음"
+
+            time_str = format_korean_time(job.next_run_time) if job.next_run_time else "시간 정보 없음"
+            label = f"{target} | {msg}"[:100]
+            description = time_str[:100]
+
+            options.append(discord.SelectOption(
+                label=label,
+                description=description,
+                value=job.id
+            ))
+
+        super().__init__(
+            placeholder="🗑️ 취소할 예약을 선택하세요...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        job_id = self.values[0]
+
+        # 소유권 재확인 (select가 열린 뒤 시간이 지났을 수 있으므로)
+        owner_id = bot.job_owners.get(job_id)
+        is_admin = interaction.user.guild_permissions.administrator
+
+        if owner_id and owner_id != interaction.user.id and not is_admin:
+            await interaction.response.send_message(
+                "❌ 본인이 만든 예약이 아닙니다.", ephemeral=True
+            )
+            return
+
+        job = bot.scheduler.get_job(job_id)
+        if not job:
+            await interaction.response.send_message(
+                "❌ 이미 실행되었거나 존재하지 않는 예약입니다.", ephemeral=True
+            )
+            return
+
+        try:
+            target, msg = job.name.split(" | ", 1)
+        except ValueError:
+            target, msg = "알 수 없음", "내용 없음"
+
+        time_str = format_korean_time(job.next_run_time) if job.next_run_time else "시간 정보 없음"
+
+        bot.scheduler.remove_job(job_id=job_id)
+        bot.job_owners.pop(job_id, None)
+        save_job_owners(bot.job_owners)
+
+        # 드롭다운 비활성화 후 완료 메시지
+        self.disabled = True
+        await interaction.response.edit_message(view=self.view)
+        await interaction.followup.send(
+            f"🗑️ 예약이 취소되었습니다!\n"
+            f"🆔 **ID:** `{job_id}`\n"
+            f"📅 **일시:** {time_str}\n"
+            f"👤 **대상:** {target}\n"
+            f"💬 **내용:** {msg}",
+            ephemeral=True
+        )
+
+
+class CancelView(discord.ui.View):
+    def __init__(self, jobs, author_id):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.add_item(CancelSelect(jobs))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """명령어를 실행한 본인만 드롭다운을 사용할 수 있도록 제한"""
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ 본인이 실행한 명령어에만 응답할 수 있습니다.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+# [5] 슬래시 명령어: /예약
 @bot.tree.command(name="예약", description="지정한 시간에 특정 사용자를 태그하는 알림을 예약합니다.")
 @app_commands.describe(
     일시="예: 20분 뒤 / 오늘 오후 3시 / 2026년 6월 2일 8시 10분",
@@ -284,7 +375,7 @@ async def schedule_notification(
         except:
             pass
 
-# [4] 슬래시 명령어: /예약목록
+# [6] 슬래시 명령어: /예약목록
 @bot.tree.command(name="예약목록", description="현재 대기 중인 알림 예약 목록을 보여줍니다.")
 async def list_jobs(interaction: discord.Interaction):
     jobs = bot.scheduler.get_jobs()
@@ -314,40 +405,51 @@ async def list_jobs(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# [5] 슬래시 명령어: /예약취소
-@bot.tree.command(name="예약취소", description="예약 번호(ID)를 이용해 알림을 취소합니다.")
-@app_commands.describe(번호="취소할 예약의 번호(ID)를 입력하세요")
-async def cancel_job(interaction: discord.Interaction, 번호: str):
-    job = bot.scheduler.get_job(job_id=번호)
-
-    if not job:
-        await interaction.response.send_message(
-            f"❌ 예약 번호 `{번호}`를 찾을 수 없습니다. 번호를 다시 확인해 주세요.",
-            ephemeral=True
-        )
-        return
-
-    owner_id = bot.job_owners.get(번호)
+# [6] 슬래시 명령어: /예약취소
+@bot.tree.command(name="예약취소", description="내 예약 목록을 보고 선택해서 취소합니다.")
+async def cancel_job(interaction: discord.Interaction):
     is_admin = interaction.user.guild_permissions.administrator
+    all_jobs = bot.scheduler.get_jobs()
 
-    if owner_id and owner_id != interaction.user.id and not is_admin:
+    # 관리자는 전체, 일반 유저는 본인 예약만
+    if is_admin:
+        jobs = all_jobs
+    else:
+        jobs = [j for j in all_jobs if bot.job_owners.get(j.id) == interaction.user.id]
+
+    if not jobs:
         await interaction.response.send_message(
-            f"❌ 예약 번호 `{번호}`는 본인이 만든 예약이 아닙니다.\n"
-            f"본인 예약만 취소할 수 있습니다. (관리자는 모든 예약 취소 가능)",
-            ephemeral=True
+            "📅 취소할 수 있는 예약이 없습니다.", ephemeral=True
         )
         return
 
-    bot.scheduler.remove_job(job_id=번호)
-    bot.job_owners.pop(번호, None)
-    save_job_owners(bot.job_owners)
-    await interaction.response.send_message(f"🗑️ 예약 번호 `{번호}` 알림이 성공적으로 취소되었습니다!")
+    # 예약 목록 embed
+    embed = discord.Embed(
+        title="🗑️ 예약 취소",
+        description="아래 드롭다운에서 취소할 예약을 선택하세요. (60초 후 만료)",
+        color=discord.Color.red()
+    )
+    for job in jobs[:25]:
+        try:
+            target, msg = job.name.split(" | ", 1)
+        except ValueError:
+            target, msg = "알 수 없음", "내용 없음"
+
+        time_str = format_korean_time(job.next_run_time) if job.next_run_time else "시간 정보 없음"
+        embed.add_field(
+            name=f"`{job.id}`  👤 {target}",
+            value=f"📅 {time_str}\n💬 {msg}",
+            inline=False
+        )
+
+    view = CancelView(jobs, interaction.user.id)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user.name} 봇이 로그인 성공했습니다!")
 
-# [6] 봇 실제 구동부
+# [7] 봇 실제 구동부
 keep_alive()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 bot.run(TOKEN)
