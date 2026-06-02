@@ -4,10 +4,12 @@ from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from datetime import datetime, timedelta
+from typing import Optional
 import os
 import pytz
 import uuid
 import json
+import aiohttp
 from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv
@@ -16,7 +18,35 @@ import re
 
 load_dotenv()
 
-# [0] job_owners 영속화 (재시작 후에도 소유자 정보 유지)
+# [0] 나이스 급식 API 설정
+NEIS_BASE_URL  = "https://open.neis.go.kr/hub"
+NEIS_ATPT_CODE = "Q10"      # 전라남도교육청
+NEIS_SCHOOL_CODE = "8490054" # 순천고등학교
+
+MEAL_LABELS = {"1": "조식 🌅", "2": "중식 🍱", "3": "석식 🌙"}
+
+async def fetch_meal(date_str: str, meal_code: str = "2"):
+    """NEIS API에서 급식 정보를 가져옵니다. 없으면 None 반환."""
+    params = {
+        "KEY": os.getenv("NEIS_API_KEY"),
+        "Type": "json",
+        "pIndex": 1,
+        "pSize": 10,
+        "ATPT_OFCDC_SC_CODE": NEIS_ATPT_CODE,
+        "SD_SCHUL_CODE": NEIS_SCHOOL_CODE,
+        "MMEAL_SC_CODE": meal_code,
+        "MLSV_YMD": date_str,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{NEIS_BASE_URL}/mealServiceDietInfo", params=params) as resp:
+            data = await resp.json(content_type=None)
+
+    if "mealServiceDietInfo" not in data:
+        return None
+    rows = data["mealServiceDietInfo"][1].get("row", [])
+    return rows[0] if rows else None
+
+# [0-1] job_owners 영속화 (재시작 후에도 소유자 정보 유지)
 JOB_OWNERS_FILE = "job_owners.json"
 
 def load_job_owners() -> dict:
@@ -444,6 +474,57 @@ async def cancel_job(interaction: discord.Interaction):
 
     view = CancelView(jobs, interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+# [8] 슬래시 명령어: /급식
+@bot.tree.command(name="급식", description="순천고등학교 오늘의 급식 메뉴를 보여줍니다.")
+@app_commands.describe(식사="조식 / 중식 / 석식 (기본값: 중식)")
+@app_commands.choices(식사=[
+    app_commands.Choice(name="조식", value="1"),
+    app_commands.Choice(name="중식", value="2"),
+    app_commands.Choice(name="석식", value="3"),
+])
+async def meal_info(interaction: discord.Interaction, 식사: Optional[app_commands.Choice[str]] = None):
+    await interaction.response.defer()
+
+    seoul_tz = pytz.timezone("Asia/Seoul")
+    today = datetime.now(seoul_tz)
+    date_str = today.strftime("%Y%m%d")
+
+    meal_code = 식사.value if 식사 else "2"
+    meal_label = MEAL_LABELS[meal_code]
+    date_display = f"{today.year}년 {today.month}월 {today.day}일"
+
+    try:
+        meal = await fetch_meal(date_str, meal_code)
+    except Exception as e:
+        print(f"급식 API 오류: {e}")
+        await interaction.followup.send("❌ 급식 정보를 가져오는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+        return
+
+    if not meal:
+        await interaction.followup.send(
+            f"📭 오늘({date_display}) {meal_label} 급식 정보가 없습니다."
+        )
+        return
+
+    # DDISH_NM: "메뉴1<br/>메뉴2<br/>..." 형식 파싱
+    raw_menu = meal.get("DDISH_NM", "")
+    menu_items = [item.strip() for item in raw_menu.split("<br/>") if item.strip()]
+    menu_text = "\n".join(f"• {item}" for item in menu_items) or "정보 없음"
+
+    cal_info = meal.get("CAL_INFO", "정보 없음")
+
+    embed = discord.Embed(
+        title=f"🍽️ 순천고등학교  {meal_label}",
+        description=f"📅 {date_display}",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="📋 메뉴", value=menu_text, inline=False)
+    embed.add_field(name="🔥 칼로리", value=cal_info, inline=True)
+    embed.set_footer(text="출처: 나이스 교육정보개방포털")
+
+    await interaction.followup.send(embed=embed)
+
 
 @bot.event
 async def on_ready():

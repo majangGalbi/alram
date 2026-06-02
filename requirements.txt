@@ -5,3 +5,4 @@ Flask
 python-dotenv
 dateparser
 sqlalchemy
+aiohttp
