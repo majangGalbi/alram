@@ -4,6 +4,7 @@ from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from datetime import datetime, timedelta
+from typing import Optional
 import os
 import pytz
 import uuid
@@ -482,7 +483,7 @@ async def cancel_job(interaction: discord.Interaction):
     app_commands.Choice(name="중식", value="2"),
     app_commands.Choice(name="석식", value="3"),
 ])
-async def meal_info(interaction: discord.Interaction, 식사: app_commands.Choice[str] = None):
+async def meal_info(interaction: discord.Interaction, 식사: Optional[app_commands.Choice[str]] = None):
     await interaction.response.defer()
 
     seoul_tz = pytz.timezone("Asia/Seoul")
