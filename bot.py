@@ -2,10 +2,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from datetime import datetime, timedelta
 import os
 import pytz
 import uuid
+import json
 from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv
@@ -13,6 +15,19 @@ import dateparser
 import re
 
 load_dotenv()
+
+# [0] job_owners 영속화 (재시작 후에도 소유자 정보 유지)
+JOB_OWNERS_FILE = "job_owners.json"
+
+def load_job_owners() -> dict:
+    if os.path.exists(JOB_OWNERS_FILE):
+        with open(JOB_OWNERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_job_owners(job_owners: dict):
+    with open(JOB_OWNERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(job_owners, f, ensure_ascii=False)
 
 # [1] 24시간 호스팅 유지를 위한 간단한 웹서버 세팅
 app = Flask('')
@@ -35,13 +50,32 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
-        self.scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
-        self.job_owners = {}  # job_id -> user_id 소유자 매핑
+
+        # SQLite jobstore: 봇 재시작 후에도 예약된 잡이 유지됨
+        jobstores = {
+            'default': SQLAlchemyJobStore(url='sqlite:///scheduler.db')
+        }
+        self.scheduler = AsyncIOScheduler(
+            jobstores=jobstores,
+            timezone="Asia/Seoul"
+        )
+        # 소유자 정보 파일에서 로드
+        self.job_owners = load_job_owners()
 
     async def setup_hook(self):
         await self.tree.sync()
         self.scheduler.start()
-        print("⏰ 스케줄러가 시작되었습니다.")
+
+        # 재시작 시 스케줄러에 없는 고아 소유자 정보 정리
+        existing_ids = {job.id for job in self.scheduler.get_jobs()}
+        cleaned = {k: v for k, v in self.job_owners.items() if k in existing_ids}
+        removed = len(self.job_owners) - len(cleaned)
+        if removed > 0:
+            self.job_owners = cleaned
+            save_job_owners(self.job_owners)
+            print(f"🧹 고아 소유자 정보 {removed}건 정리 완료")
+
+        print(f"⏰ 스케줄러 시작 완료 — 복원된 예약: {len(existing_ids)}건")
 
 bot = MyBot()
 
@@ -58,6 +92,7 @@ async def send_ping(channel_id, user_mention, message, job_id):
         print(f"❌ 알림 전송 중 오류: {e}")
     finally:
         bot.job_owners.pop(job_id, None)
+        save_job_owners(bot.job_owners)
 
 def format_korean_time(dt: datetime) -> str:
     """시스템 로케일에 상관없이 안전하게 한국어 오전/오후 시간을 포맷합니다."""
@@ -221,6 +256,7 @@ async def schedule_notification(
                 break
 
         bot.job_owners[job_id] = interaction.user.id
+        save_job_owners(bot.job_owners)
 
         bot.scheduler.add_job(
             send_ping,
@@ -304,6 +340,7 @@ async def cancel_job(interaction: discord.Interaction, 번호: str):
 
     bot.scheduler.remove_job(job_id=번호)
     bot.job_owners.pop(번호, None)
+    save_job_owners(bot.job_owners)
     await interaction.response.send_message(f"🗑️ 예약 번호 `{번호}` 알림이 성공적으로 취소되었습니다!")
 
 @bot.event
