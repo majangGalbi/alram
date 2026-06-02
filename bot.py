@@ -526,9 +526,11 @@ async def meal_info(interaction: discord.Interaction, 식사: Optional[app_comma
     await interaction.followup.send(embed=embed)
 
 
+BOT_VERSION = "v1.0"
+
 @bot.event
 async def on_ready():
-    print(f"✅ {bot.user.name} 봇이 로그인 성공했습니다!")
+    print(f"✅ {bot.user.name} 봇이 로그인 성공했습니다! ({BOT_VERSION})")
 
 # [7] 봇 실제 구동부
 keep_alive()
