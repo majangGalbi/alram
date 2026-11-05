@@ -152,3 +152,54 @@ async def test_send_ping_swallows_and_logs_errors(monkeypatch, capsys):
     monkeypatch.setattr(bot.bot, "fetch_channel", AsyncMock(side_effect=RuntimeError("boom")))
     await bot.send_ping(1, 42, "x")
     assert "알림 전송 실패" in capsys.readouterr().out
+
+
+# --- P5: /예약 오류 메시지는 본인에게만 보여야 함 ------------------------------------
+# 공개 defer(ephemeral=False) 후 첫 followup 은 ephemeral=True 여도 공개로 표시되므로,
+# 오류는 defer 없이 첫 응답(response.send_message, ephemeral=True)으로 보내야 함.
+
+@pytest.mark.parametrize("when, msg", [
+    ("아무말", "회의"),                         # 해석 불가
+    ("2020년 1월 1일 오전 9시", "회의"),          # 과거
+    (None, "가" * (bot.MAX_MESSAGE_LENGTH + 1)),  # 너무 긴 메시지
+])
+async def test_schedule_errors_are_ephemeral_first_response(scheduler, when, msg):
+    it = make_interaction()
+    it.response.is_done = MagicMock(return_value=False)
+    await bot.schedule_notification.callback(it, when or future_text(), make_member(), msg)
+    it.response.defer.assert_not_awaited()
+    it.followup.send.assert_not_awaited()
+    it.response.send_message.assert_awaited_once()
+    assert it.response.send_message.call_args.kwargs.get("ephemeral") is True
+    assert it.response.send_message.call_args.args[0].startswith("❌")
+    assert scheduler.get_jobs() == []
+
+
+async def test_schedule_success_is_public(scheduler):
+    calls = []
+    it = make_interaction()
+    it.response.defer = AsyncMock(side_effect=lambda **kw: calls.append(("defer", kw)))
+    it.followup.send = AsyncMock(side_effect=lambda *a, **kw: calls.append(("followup", kw)))
+    await bot.schedule_notification.callback(it, future_text(), make_member(), "회의")
+    assert calls[0] == ("defer", {"ephemeral": False})
+    assert calls[1][0] == "followup" and not calls[1][1].get("ephemeral")
+    it.response.send_message.assert_not_awaited()
+    assert scheduler.get_jobs()[0].func is bot.send_ping
+
+
+async def test_error_handler_is_ephemeral_before_response():
+    it = make_interaction()
+    it.response.is_done = MagicMock(return_value=False)
+    await bot.on_app_command_error(it, bot.app_commands.AppCommandError("x"))
+    assert it.response.send_message.call_args.kwargs["ephemeral"] is True
+
+
+async def test_other_commands_do_not_defer(scheduler):
+    """/예약목록, /예약취소 는 defer 없이 첫 응답에서 ephemeral 여부를 정하므로 P5 문제가 없음."""
+    list_it, cancel_it = make_interaction(), make_interaction()
+    await bot.list_jobs.callback(list_it)
+    await bot.cancel_job.callback(cancel_it, "zzzz")
+    for it in (list_it, cancel_it):
+        it.response.defer.assert_not_awaited()
+        it.followup.send.assert_not_awaited()
+        assert it.response.send_message.call_args.kwargs["ephemeral"] is True

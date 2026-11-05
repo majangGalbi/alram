@@ -22,3 +22,6 @@ Thumbs.db
 # 테스트/린트 캐시
 .pytest_cache/
 .ruff_cache/
+# 예약 저장 DB (JOBS_DB_PATH 기본값)
+jobs.sqlite
+*.sqlite-journal
