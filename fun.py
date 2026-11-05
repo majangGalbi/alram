@@ -32,7 +32,7 @@ TEAM_MAX = 10
 
 NO_PING = discord.AllowedMentions.none()
 
-_DICE_RE = re.compile(r"^(\d*)\s*[dD]\s*(\d+)\s*(?:([+-])\s*(\d+))?$")
+_DICE_RE = re.compile(r"^(\d*)\s*[dD]\s*(\d+)\s*(?:([+-])\s*(\d+))?$", re.ASCII)  # 전각·타 문자권 숫자 거부
 _SPLIT_RE = re.compile(r"[,，、\n]")
 
 

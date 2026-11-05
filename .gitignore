@@ -16,3 +16,6 @@ pip-delete-this-directory.txt
 # 운영체제 생성 파일
 .DS_Store
 Thumbs.db
+
+# 출석체크 SQLite DB
+attendance.db

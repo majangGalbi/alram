@@ -64,8 +64,10 @@ class TestTodayKst:
         assert att.today_kst(ny) == date(2026, 3, 2)
 
     def test_default_now(self):
-        assert att.today_kst() == datetime.now(SEOUL).date() or True  # 경계 순간 레이스 허용
-        assert isinstance(att.today_kst(), date)
+        before = datetime.now(SEOUL).date()
+        got = att.today_kst()
+        after = datetime.now(SEOUL).date()
+        assert got in (before, after)  # 자정 순간 호출돼도 둘 중 하나
 
 
 # ───────────── 포인트 계산 ─────────────
