@@ -10,6 +10,7 @@ from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv
 from time_parser import parse_time, TimeParseError  # 💡 시간 텍스트 파싱 (time_parser.py)
+import schedule_calendar  # 📅 서버 달력 일정표 (schedule_calendar.py)
 
 load_dotenv()
 
@@ -58,6 +59,7 @@ class MyBot(commands.Bot):
         print("⏰ 스케줄러가 시작되었습니다.")
 
 bot = MyBot()
+schedule_calendar.register(bot)
 
 def job_scope(interaction):
     """예약을 구분하는 범위: 서버(길드) 단위, DM이면 채널 단위."""
