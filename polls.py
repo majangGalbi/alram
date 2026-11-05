@@ -36,7 +36,7 @@ __all__ = ["register", "restore", "PollManager", "Poll", "PollStore"]
 
 SEOUL = pytz.timezone("Asia/Seoul")
 
-DEFAULT_DB_PATH = "polls.db"
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "polls.db")  # 실행 위치(cwd)와 무관하게 bot.py 옆에 저장
 DB_PATH_ENV = "POLLS_DB_PATH"
 
 CUSTOM_ID_PREFIX = "alram-poll:"

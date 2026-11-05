@@ -41,7 +41,7 @@ from time_parser import TimeParseError, parse_time
 __all__ = ["register"]
 
 SEOUL = pytz.timezone("Asia/Seoul")
-DEFAULT_DB_PATH = "calendar.db"
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calendar.db")  # 실행 위치(cwd)와 무관하게 bot.py 옆에 저장
 DEFAULT_REMIND_MINUTES = 10
 MAX_REMIND_MINUTES = 7 * 24 * 60          # 최대 1주일 전
 ALL_DAY_REMIND_TIME = time(9, 0)          # 종일 일정은 당일 오전 9시 기준

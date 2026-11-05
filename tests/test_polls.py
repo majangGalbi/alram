@@ -751,7 +751,8 @@ class TestRestore:
         monkeypatch.setenv("POLLS_DB_PATH", str(tmp_path / "x.db"))
         assert PollManager(FakeBot()).db_path == str(tmp_path / "x.db")
         monkeypatch.delenv("POLLS_DB_PATH")
-        assert PollManager(FakeBot()).db_path == "polls.db"
+        assert PollManager(FakeBot()).db_path == polls.DEFAULT_DB_PATH
+        assert os.path.basename(polls.DEFAULT_DB_PATH) == "polls.db" and os.path.isabs(polls.DEFAULT_DB_PATH)
 
     def test_store_lazy_open(self, tmp_path):
         path = tmp_path / "lazy.db"

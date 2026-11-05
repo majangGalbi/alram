@@ -109,6 +109,20 @@ class MyBot(commands.Bot):
         await polls.restore(self)  # 진행 중 투표 버튼/자동 마감 복원
         print(f"⏰ 스케줄러가 시작되었습니다. (저장된 예약 {len(self.scheduler.get_jobs())}건)")
 
+    async def close(self):
+        # 종료 시 백그라운드 작업 정리: 스케줄러, 투표 자동 마감 태스크, 달력 알림 루프
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
+        manager = getattr(self, "poll_manager", None)
+        if manager is not None:
+            for task in list(manager.tasks.values()):
+                task.cancel()
+            manager.tasks.clear()
+        task = getattr(self, "_calendar_reminder_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        await super().close()
+
 bot = MyBot()
 polls.register(bot)
 attendance.register(bot)

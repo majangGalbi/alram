@@ -18,7 +18,7 @@ from discord import app_commands
 
 SEOUL = pytz.timezone("Asia/Seoul")
 DB_ENV = "ATTENDANCE_DB_PATH"
-DEFAULT_DB_PATH = "attendance.db"
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attendance.db")  # 실행 위치(cwd)와 무관하게 bot.py 옆에 저장
 
 BASE_POINTS = 10            # 출석 기본 포인트
 STREAK_BONUS_PER_DAY = 2    # 연속 2일째부터 하루당 추가 포인트

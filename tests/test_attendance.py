@@ -257,7 +257,8 @@ class TestCheckIn:
 
     def test_default_path(self, monkeypatch):
         monkeypatch.delenv(att.DB_ENV, raising=False)
-        assert att.AttendanceStore().path == "attendance.db"
+        assert att.AttendanceStore().path == att.DEFAULT_DB_PATH
+        assert os.path.basename(att.DEFAULT_DB_PATH) == "attendance.db" and os.path.isabs(att.DEFAULT_DB_PATH)
 
     def test_get_stats_none(self, store):
         assert store.get_stats(1, 999) is None
