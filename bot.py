@@ -89,14 +89,15 @@ class MyBot(commands.Bot):
             # 사용자가 입력한 메시지 속 @everyone/@here/역할 멘션이 봇 권한으로 발송되지 않도록 차단
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=False),
         )
-        self.scheduler = create_scheduler()
+        self.jobs_db_url = jobs_db_url()
+        self.scheduler = create_scheduler(self.jobs_db_url)
         self.scheduler.add_listener(log_missed_job, EVENT_JOB_MISSED)
 
     async def setup_hook(self):
         await self.tree.sync()
-        ensure_sqlite_dir(jobs_db_url())
+        ensure_sqlite_dir(self.jobs_db_url)
         self.scheduler.start()  # DB에 저장된 예약을 불러옴
-        print("⏰ 스케줄러가 시작되었습니다.")
+        print(f"⏰ 스케줄러가 시작되었습니다. (저장된 예약 {len(self.scheduler.get_jobs())}건)")
 
 bot = MyBot()
 

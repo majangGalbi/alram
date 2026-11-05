@@ -233,3 +233,64 @@ def test_run_as_script_restores_jobs_with_same_module(tmp_path):
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     assert out.stdout.split() == ["__main__", "True", "True"]
+
+
+async def test_setup_hook_creates_db_folder_and_restores_jobs(tmp_path, monkeypatch, capsys):
+    url = "sqlite:///" + str(tmp_path / "nested" / "dir" / "jobs.sqlite")
+    monkeypatch.setattr(bot.bot, "jobs_db_url", url)
+    monkeypatch.setattr(bot.bot.tree, "sync", AsyncMock())
+
+    first = bot.create_scheduler(url)
+    monkeypatch.setattr(bot.bot, "scheduler", first)
+    await bot.bot.setup_hook()  # 폴더가 없어도 DB 파일을 만들고 시작해야 함
+    assert (tmp_path / "nested" / "dir" / "jobs.sqlite").exists()
+    store_job(first, "s001", datetime.now(SEOUL) + timedelta(days=1))
+    first.shutdown(wait=False)
+
+    second = bot.create_scheduler(url)
+    monkeypatch.setattr(bot.bot, "scheduler", second)
+    try:
+        await bot.bot.setup_hook()
+        assert second.get_job("s001") is not None
+        assert "저장된 예약 1건" in capsys.readouterr().out
+    finally:
+        second.shutdown(wait=False)
+
+
+async def test_job_saved_by_script_process_is_restored_by_another_process(tmp_path):
+    """프로세스 A(`python bot.py` 방식)가 /예약 으로 저장 → 프로세스 종료 → 새 프로세스(B=이 테스트)가 복원."""
+    db_url = "sqlite:///" + str(tmp_path / "jobs.sqlite")
+    code = textwrap.dedent(f"""
+        import asyncio, runpy, sys
+        sys.path.insert(0, {ROOT!r})
+        sys.path.insert(0, {os.path.join(ROOT, 'tests')!r})
+        try:
+            runpy.run_path({os.path.join(ROOT, 'bot.py')!r}, run_name="__main__")
+        except SystemExit:
+            pass
+        m = sys.modules["bot"]
+        from test_bot import make_interaction, make_member, future_text
+
+        async def main():
+            s = m.create_scheduler({db_url!r})
+            s.start()
+            m.bot.scheduler = s
+            await m.schedule_notification.callback(make_interaction(), future_text(), make_member(), "프로세스 A")
+            print(s.get_jobs()[0].id)
+            s.shutdown(wait=False)
+        asyncio.run(main())
+    """)
+    env = {k: v for k, v in os.environ.items() if k not in ("DISCORD_BOT_TOKEN", "JOBS_DB_URL", "JOBS_DB_PATH")}
+    out = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=env,
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    job_id = out.stdout.split()[-1]
+
+    s = bot.create_scheduler(db_url)
+    s.start(paused=True)
+    try:
+        job = s.get_job(job_id)
+        assert job is not None and job.func is bot.send_ping
+        assert job.kwargs["message"] == "프로세스 A"
+    finally:
+        s.shutdown(wait=False)
