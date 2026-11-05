@@ -9,7 +9,7 @@ import uuid
 from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv
-import dateparser  # 💡 한국어 날짜 파싱을 위한 라이브러리 추가
+from time_parser import parse_time, TimeParseError  # 💡 시간 텍스트 파싱 (time_parser.py)
 
 load_dotenv()
 
@@ -66,22 +66,17 @@ async def schedule_notification(
     seoul_tz = pytz.timezone("Asia/Seoul")
     current_time = datetime.now(seoul_tz)
 
-    # 💡 dateparser를 사용하여 한국어 텍스트를 datetime 객체로 변환합니다.
-    # 지출 정황(오전/오후, 년, 월, 일 등)을 알아서 계산해 줍니다.
-    parsed_date = dateparser.parse(
-        일시, 
-        languages=['ko'], 
-        settings={'RELATIVE_BASE': current_time.replace(tzinfo=None)}
-    )
-    
-    # 파싱에 실패한 경우
-    if not parsed_date:
+    # 💡 time_parser 로 한국어/영어/숫자 형식의 시간 텍스트를 datetime 으로 변환합니다.
+    #    해석할 수 없거나 모호한 입력은 TimeParseError(사유 포함)로 실패합니다. (README 참고)
+    try:
+        parsed_date = parse_time(일시, current_time)
+    except TimeParseError as e:
         await interaction.followup.send(
-            "❌ 날짜/시간 형식을 인식할 수 없습니다.\n"
+            f"❌ 날짜/시간을 인식할 수 없습니다: {e}\n"
             "**올바른 예시:**\n"
-            "• `2026년 5월 23일 오후 1시 30분 0초`\n"
-            "• `2026년 11월 5일 오전 9시`\n"
-            "• `오늘 오후 8시`, `내일 오전 11시 30분`", 
+            "• `30분 뒤`, `1시간 반 뒤`\n"
+            "• `오늘 오후 8시`, `내일 오전 11시 30분`, `모레 아침 7시 반`\n"
+            "• `다음주 월요일 9시`, `2026년 11월 5일 오전 9시`",
             ephemeral=True
         )
         return
