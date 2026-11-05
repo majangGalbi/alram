@@ -757,7 +757,7 @@ class TestRestore:
         path = tmp_path / "lazy.db"
         m = PollManager(FakeBot(), db_path=str(path))
         assert not path.exists()
-        m.store
+        _ = m.store
         assert path.exists()
         m.store.close_connection()
 

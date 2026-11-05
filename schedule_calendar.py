@@ -1009,7 +1009,7 @@ def parse_bulk_text(text: str, now: datetime) -> Tuple[List[BulkItem], List[Tupl
     import csv
 
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    data = [(i + 1, l) for i, l in enumerate(lines) if l.strip() and not l.strip().startswith("#")]
+    data = [(i + 1, ln) for i, ln in enumerate(lines) if ln.strip() and not ln.strip().startswith("#")]
     if not data:
         raise BulkParseError("등록할 일정이 없습니다. " + BULK_FORMAT_HELP)
     header = [h.strip().lstrip("\ufeff") for h in next(csv.reader([data[0][1]]))]
@@ -1023,7 +1023,7 @@ def parse_bulk_text(text: str, now: datetime) -> Tuple[List[BulkItem], List[Tupl
         try:
             if is_csv:
                 row = next(csv.reader([line]))
-                rec = dict(zip(header, row + [""] * (len(header) - len(row))))
+                rec = dict(zip(header, row + [""] * (len(header) - len(row)), strict=False))
                 items.append(_bulk_item(line_no, rec.get("날짜", ""), rec.get("시각", ""), rec.get("제목", ""),
                                         rec.get("설명", ""), rec.get("알림", ""), now))
             else:

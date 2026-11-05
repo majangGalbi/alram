@@ -280,7 +280,7 @@ def build_embed(poll: Poll) -> discord.Embed:
     winners = set(poll.winners()) if poll.closed else set()
 
     lines = []
-    for i, (opt, c) in enumerate(zip(poll.options, counts)):
+    for i, (opt, c) in enumerate(zip(poll.options, counts, strict=True)):
         crown = "🏆 " if i in winners else ""
         lines.append(
             f"{crown}**{i + 1}. {_safe(opt)}**\n`{make_bar(c, total)}` {c}표 ({percent(c, total):.1f}%)"

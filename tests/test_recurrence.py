@@ -3,6 +3,7 @@
 기준 시각(BASE): 2026-11-05(목) 14:00:00 한국 시간.
 """
 
+import dataclasses
 import os
 import sys
 from datetime import datetime
@@ -446,7 +447,7 @@ def test_is_recurring_none():
 def test_recurrence_is_hashable_and_frozen():
     r = parse_recurrence("매일 9시")
     hash(r)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         r.kind = "interval"  # type: ignore[misc]
     assert isinstance(r, Recurrence)
 
