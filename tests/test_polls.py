@@ -817,3 +817,13 @@ class TestIntegration:
 class FakeTreeBot:
     def __init__(self):
         self.tree = discord.app_commands.CommandTree(discord.Client(intents=discord.Intents.none()))
+
+
+def test_command_payloads_valid_for_sync():
+    """tree.sync 로 보낼 페이로드: 서버 전용(contexts=[0]), 설명 100자 이하."""
+    import bot as bot_module
+    for name in ["투표", "투표마감"]:
+        d = bot_module.bot.tree.get_command(name).to_dict(bot_module.bot.tree)
+        assert d["contexts"] == [0]
+        assert len(d["description"]) <= 100
+        assert all(len(o["description"]) <= 100 and len(o["name"]) <= 32 for o in d["options"])
