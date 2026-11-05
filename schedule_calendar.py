@@ -29,6 +29,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+import re
 from typing import Dict, Iterable, List, Literal, Optional, Tuple
 
 import discord
@@ -104,6 +105,20 @@ def parse_date_only(text: str, base_time: datetime) -> date:
         raise TimeParseError(
             f"'{raw[:50]}' 을(를) 날짜로 이해하지 못했어요. 예: '내일', '모레', '12월 25일', '2026-12-25', '다음주 금요일'"
         ) from None
+
+
+_DATE_HINT_RE = re.compile(
+    r"오늘|금일|내일|낼|명일|모레|글피|어제|요일|주|달|월|년|\d+\s*일|\d+\s*[/.-]\s*\d+|"
+    r"today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week",
+    re.IGNORECASE,
+)
+
+
+def parse_end_time(text: str, start: datetime, now: datetime) -> datetime:
+    """종료 일시 해석. 날짜가 들어 있으면('내일 오후 1시') 현재 기준, 시각·기간만
+    있으면('오후 5시', '2시간 뒤') 시작 시각 기준으로 해석한다."""
+    base = now if _DATE_HINT_RE.search(str(text or "")) else start
+    return parse_time(text, base)
 
 
 def period_range(period: str, today: date) -> Tuple[date, date]:
@@ -522,7 +537,7 @@ def _resolve_times(일시: str, 종료: Optional[str], 종일: bool, base: datet
         end = datetime.combine(parse_date_only(종료, base), time.min) if 종료 else None
     else:
         start = parse_time(일시, base)
-        end = parse_time(종료, start) if 종료 else None  # 종료는 시작 기준으로 해석 ("2시간 뒤" 등)
+        end = parse_end_time(종료, start, base) if 종료 else None
     if end is not None and end < start:
         raise TimeParseError("종료 시각이 시작 시각보다 앞설 수 없습니다.")
     if end is not None and not 종일 and end == start:
@@ -676,7 +691,7 @@ async def cmd_edit(interaction: discord.Interaction, 번호: int, 제목: Option
                 end = None
             elif 종료 is not None:
                 end = (datetime.combine(parse_date_only(종료, base), time.min) if all_day
-                       else parse_time(종료, start))
+                       else parse_end_time(종료, start, base))
             elif ev.end is not None and all_day:
                 end = datetime.combine(ev.end.date(), time.min)
             else:
