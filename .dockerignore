@@ -1,0 +1,15 @@
+.git
+.github
+.env
+*.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+venv/
+env/
+.venv/
+tests/
+REVIEW.md
+.DS_Store
+Thumbs.db

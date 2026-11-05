@@ -82,12 +82,60 @@
 | `11월 6일 토요일 9시`, `내일 월요일 3시` | 날짜와 요일이 맞지 않음 |
 | `730`, `3 30`, `3:3` | 형식이 모호함 |
 
-## 개발
+## 환경변수
+
+| 이름 | 필수 | 기본값 | 설명 |
+| --- | --- | --- | --- |
+| `DISCORD_BOT_TOKEN` | 예 | 없음 | 디스코드 봇 토큰. 없으면 봇이 시작하지 않고 종료합니다. |
+| `PORT` | 아니오 | `8080` | keep-alive 웹서버(Flask, `GET /`) 포트. Heroku/Render 등은 자동으로 지정합니다. |
+
+로컬에서는 [`.env.example`](.env.example)을 `.env`로 복사해 값을 채우면 `bot.py`가 `python-dotenv`로 읽습니다.
+`.env`는 `.gitignore`에 들어 있어 커밋되지 않습니다.
+
+## 로컬 실행
+
+CI는 Python 3.11 / 3.12 / 3.13에서 테스트합니다.
 
 ```bash
-pip install pytest pytz
-python -m pytest tests/test_time_parser.py
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env               # DISCORD_BOT_TOKEN 입력
+python bot.py
 ```
+
+## 테스트 / 린트
+
+```bash
+pip install -r requirements-dev.txt ruff==0.17.3
+python -m pytest -q                # 전체 테스트 (tests/)
+python -m pytest tests/test_time_parser.py   # 파서 테스트만
+ruff check .                       # 린트 (설정: ruff.toml)
+```
+
+`ruff format` 같은 자동 포맷은 사용하지 않습니다. 린트 규칙은 버그성 경고 위주(`E4`/`E7`/`E9`/`F`/`B`)만 켜 두었습니다.
+push / PR 마다 GitHub Actions([`.github/workflows/ci.yml`](.github/workflows/ci.yml))가 같은 테스트와 린트를 실행합니다.
+
+## 배포
+
+### Docker
+
+```bash
+docker build -t alram .
+docker run -d --name alram --env-file .env -p 8080:8080 alram
+```
+
+컨테이너는 `python bot.py`(Procfile의 `web` 프로세스와 같은 명령)를 실행합니다.
+`PORT`를 바꾸면 `-p` 의 컨테이너 쪽 포트도 맞춰 주세요(예: `-e PORT=3000 -p 3000:3000`).
+
+### Procfile 기반 호스팅 (Heroku 등)
+
+[`Procfile`](Procfile)의 `web: python bot.py`가 그대로 쓰입니다. 플랫폼 설정에서 `DISCORD_BOT_TOKEN`을 지정하세요.
+`PORT`는 플랫폼이 주입합니다.
+
+### 주의
+
+- 예약은 메모리(APScheduler)에만 저장되므로 **프로세스/컨테이너가 재시작되면 예약이 사라집니다.**
 
 파서 API:
 

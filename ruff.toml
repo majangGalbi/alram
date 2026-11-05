@@ -1,0 +1,12 @@
+# ruff 린트 설정 (CI 에서 `ruff check .` 로 실행)
+# 포맷터(ruff format)는 사용하지 않는다. 기존 코드 스타일/줄바꿈(bot.py 는 CRLF)을 그대로 둔다.
+target-version = "py311"
+line-length = 120
+
+[lint]
+# 실제 버그로 이어질 수 있는 규칙 위주로만 켠다.
+#  E4/E7/E9 : import 위치, 문장 구문 오류 등 (pycodestyle 중 스타일 아닌 것)
+#  F        : pyflakes (미사용 import/변수, 정의되지 않은 이름 등)
+#  B        : flake8-bugbear (흔한 버그 패턴)
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = []

@@ -1,6 +1,7 @@
 # 보안 및 설정 파일 (가장 중요!)
 .env
 *.env
+!.env.example
 
 # 파이썬 가상환경 및 캐시 파일
 __pycache__/
@@ -10,9 +11,14 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 pip-log.txt
 pip-delete-this-directory.txt
 
 # 운영체제 생성 파일
 .DS_Store
 Thumbs.db
+
+# 테스트/린트 캐시
+.pytest_cache/
+.ruff_cache/
