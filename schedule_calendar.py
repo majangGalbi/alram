@@ -65,6 +65,7 @@ PERIODS = ("오늘", "이번주", "이번달", "다음달")
 NO_MENTIONS = discord.AllowedMentions.none()
 
 FONT_CANDIDATES = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "NanumGothic-Regular.ttf"),  # 저장소 포함(OFL)
     "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -435,9 +436,66 @@ def find_korean_font() -> Optional[str]:
     return None
 
 
+# PNG 달력 레이아웃 (픽셀)
+PNG_PAD = 24
+PNG_CELL_W = 180
+PNG_CELL_H = 132
+PNG_TITLE_H = 70
+PNG_HEAD_H = 34
+PNG_LINE_H = 19
+PNG_DAY_H = 30
+PNG_MAX_LINES = (PNG_CELL_H - PNG_DAY_H - 6) // PNG_LINE_H   # 칸 하나에 들어가는 일정 줄 수 (=5)
+
+COLOR_BG = (255, 255, 255)
+COLOR_GRID = (205, 208, 214)
+COLOR_TEXT = (40, 40, 40)
+COLOR_SUN = (214, 48, 49)
+COLOR_SAT = (41, 98, 214)
+COLOR_TODAY_BG = (255, 243, 191)
+COLOR_TODAY_RING = (240, 170, 0)
+COLOR_EVENT = (52, 64, 120)
+COLOR_MORE = (120, 120, 120)
+COLOR_OTHER_MONTH = (246, 247, 249)
+
+
+def png_size(year: int, month: int) -> Tuple[int, int]:
+    weeks = len(_stdcal.Calendar(firstweekday=6).monthdayscalendar(year, month))
+    return (PNG_PAD * 2 + PNG_CELL_W * 7,
+            PNG_PAD + PNG_TITLE_H + PNG_HEAD_H + PNG_CELL_H * weeks + PNG_PAD)
+
+
+def cell_labels(evs: List[Event], day: date, max_lines: int = PNG_MAX_LINES) -> List[str]:
+    """한 날짜 칸에 넣을 일정 문자열들. 넘치면 마지막 줄을 '+N개' 로."""
+    labels = []
+    for ev in evs:
+        if ev.all_day:
+            prefix = "종일"
+        elif day != ev.start.date():
+            prefix = "계속"
+        else:
+            prefix = f"{ev.start.hour:02d}:{ev.start.minute:02d}"
+        labels.append(f"{prefix} {ev.title}")
+    if len(labels) > max_lines:
+        keep = max_lines - 1
+        labels = labels[:keep] + [f"+{len(evs) - keep}개"]
+    return labels
+
+
+def _fit(draw, text: str, font, max_w: int) -> str:
+    """픽셀 폭에 맞게 말줄임."""
+    if draw.textlength(text, font=font) <= max_w:
+        return text
+    while text and draw.textlength(text + "…", font=font) > max_w:
+        text = text[:-1]
+    return text + "…"
+
+
 def render_month_png(year: int, month: int, events: List[Event], today: Optional[date] = None,
                      font_path: Optional[str] = None) -> Optional[bytes]:
-    """Pillow 로 달력 PNG 생성. Pillow 나 한글 폰트가 없으면 None (텍스트로 폴백)."""
+    """Pillow 로 실제 달력 같은 월간 격자 PNG 를 그린다(일~토 7열, 칸 안에 일정 제목·시각).
+
+    Pillow 나 한글 폰트가 없으면 None 을 돌려 호출부가 텍스트 달력으로 폴백한다.
+    """
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
@@ -445,44 +503,59 @@ def render_month_png(year: int, month: int, events: List[Event], today: Optional
     font_path = font_path or find_korean_font()
     if not font_path:
         return None
+    bold_path = font_path.replace("-Regular", "-Bold")
+    if bold_path == font_path or not os.path.isfile(bold_path):
+        bold_path = font_path
     try:
-        f_title = ImageFont.truetype(font_path, 30)
-        f_head = ImageFont.truetype(font_path, 18)
-        f_day = ImageFont.truetype(font_path, 18)
-        f_ev = ImageFont.truetype(font_path, 13)
+        f_title = ImageFont.truetype(bold_path, 34)
+        f_head = ImageFont.truetype(bold_path, 18)
+        f_day = ImageFont.truetype(bold_path, 18)
+        f_ev = ImageFont.truetype(font_path, 14)
     except OSError:
         return None
 
     start, end = month_range(year, month)
     grouped = group_by_day(events, start, end)
     weeks = _stdcal.Calendar(firstweekday=6).monthdayscalendar(year, month)
-    cw, ch, top, pad = 140, 110, 90, 20
-    width = pad * 2 + cw * 7
-    height = top + 30 + ch * len(weeks) + pad
-    img = Image.new("RGB", (width, height), (255, 255, 255))
+    width, height = png_size(year, month)
+    img = Image.new("RGB", (width, height), COLOR_BG)
     dr = ImageDraw.Draw(img)
-    dr.text((pad, 25), f"{year}년 {month}월", font=f_title, fill=(30, 30, 30))
+
+    dr.text((PNG_PAD, PNG_PAD), f"{year}년 {month}월", font=f_title, fill=COLOR_TEXT)
+    total = sum(len(v) for v in grouped.values())
+    sub = f"일정 {len(events)}건" if total else "등록된 일정 없음"
+    dr.text((width - PNG_PAD - dr.textlength(sub, font=f_head), PNG_PAD + 14), sub, font=f_head, fill=COLOR_MORE)
+
+    head_y = PNG_PAD + PNG_TITLE_H
     for i, w in enumerate("일월화수목금토"):
-        color = (220, 50, 50) if i == 0 else (50, 90, 220) if i == 6 else (60, 60, 60)
-        dr.text((pad + i * cw + 8, top), w, font=f_head, fill=color)
-    y0 = top + 30
+        color = COLOR_SUN if i == 0 else COLOR_SAT if i == 6 else COLOR_TEXT
+        x = PNG_PAD + i * PNG_CELL_W + PNG_CELL_W // 2 - dr.textlength(w, font=f_head) / 2
+        dr.text((x, head_y + 6), w, font=f_head, fill=color)
+
+    grid_y = head_y + PNG_HEAD_H
     for r, week in enumerate(weeks):
         for c, day in enumerate(week):
-            x, y = pad + c * cw, y0 + r * ch
-            dr.rectangle([x, y, x + cw, y + ch], outline=(210, 210, 210))
+            x, y = PNG_PAD + c * PNG_CELL_W, grid_y + r * PNG_CELL_H
+            box = [x, y, x + PNG_CELL_W, y + PNG_CELL_H]
             if day == 0:
+                dr.rectangle(box, fill=COLOR_OTHER_MONTH, outline=COLOR_GRID)
                 continue
             d = date(year, month, day)
             if d == today:
-                dr.rectangle([x + 1, y + 1, x + cw - 1, y + ch - 1], fill=(255, 245, 200))
-            color = (220, 50, 50) if c == 0 else (50, 90, 220) if c == 6 else (40, 40, 40)
+                dr.rectangle(box, fill=COLOR_TODAY_BG, outline=COLOR_GRID)
+                dr.rectangle([x + 2, y + 2, x + PNG_CELL_W - 2, y + PNG_CELL_H - 2], outline=COLOR_TODAY_RING, width=3)
+            else:
+                dr.rectangle(box, fill=COLOR_BG, outline=COLOR_GRID)
+            color = COLOR_SUN if c == 0 else COLOR_SAT if c == 6 else COLOR_TEXT
             dr.text((x + 8, y + 5), str(day), font=f_day, fill=color)
-            evs = grouped.get(d, [])
-            for i, ev in enumerate(evs[:4]):
-                label = truncate(ev.title, 9) if i < 3 or len(evs) == 4 else f"+{len(evs) - 3}건"
-                dr.text((x + 8, y + 32 + i * 18), label, font=f_ev, fill=(70, 70, 140))
+            if d == today:
+                dr.text((x + 8 + dr.textlength(str(day), font=f_day) + 6, y + 8), "오늘", font=f_ev, fill=COLOR_TODAY_RING)
+            for i, label in enumerate(cell_labels(grouped.get(d, []), d)):
+                more = label.startswith("+") and label.endswith("개")
+                dr.text((x + 8, y + PNG_DAY_H + i * PNG_LINE_H), _fit(dr, label, f_ev, PNG_CELL_W - 14),
+                        font=f_ev, fill=COLOR_MORE if more else COLOR_EVENT)
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 
@@ -608,26 +681,15 @@ async def cmd_list(interaction: discord.Interaction,
                                             allowed_mentions=NO_MENTIONS)
 
 
-@app_commands.command(name="달력", description="월간 달력과 그 달 일정을 보여줍니다.")
-@app_commands.guild_only()
-@app_commands.describe(년="연도 (기본: 올해)", 월="월 (기본: 이번 달)", 이미지="PNG 이미지로 보기 (한글 폰트 필요)")
-async def cmd_calendar(interaction: discord.Interaction,
-                       년: Optional[app_commands.Range[int, 1900, 2200]] = None,
-                       월: Optional[app_commands.Range[int, 1, 12]] = None,
-                       이미지: bool = False):
-    if interaction.guild_id is None:
-        return await _error(interaction, "❌ 일정 기능은 서버에서만 사용할 수 있습니다.")
-    today = now_seoul().date()
-    year = 년 if 년 is not None else today.year
-    month = 월 if 월 is not None else today.month
-    if not (1 <= month <= 12 and 1900 <= year <= 2200):
-        return await _error(interaction, "❌ 연도는 1900~2200, 월은 1~12 사이로 입력해 주세요.")
+def build_calendar_message(guild_id: int, year: int, month: int, today: date,
+                           image: bool = True) -> Tuple[discord.Embed, Optional[discord.File]]:
+    """/달력 응답(임베드 + 선택적 PNG 파일). 이미지 실패 시 텍스트 격자로 폴백하고 안내한다."""
     start, end = month_range(year, month)
-    events = get_store().list_range(interaction.guild_id, start, end)
+    events = get_store().list_range(guild_id, start, end)
     embed = discord.Embed(title=f"📆 {year}년 {month}월", color=0x5865F2)
-    notice = ""
     file = None
-    if 이미지:
+    notice = ""
+    if image:
         png = render_month_png(year, month, events, today)
         if png is not None:
             file = discord.File(io.BytesIO(png), filename="calendar.png")
@@ -638,7 +700,64 @@ async def cmd_calendar(interaction: discord.Interaction,
         days = [d for ev in events for d in ev.days()]
         embed.description = notice + "```\n" + render_month_text(year, month, days, today) + "\n```"
     embed.add_field(name="이 달 일정", value=month_summary(events, start, end, EMBED_FIELD_VALUE_LIMIT), inline=False)
-    kwargs = {"embed": embed, "allowed_mentions": NO_MENTIONS}
+    return embed, file
+
+
+def shift_month(year: int, month: int, delta: int) -> Tuple[int, int]:
+    idx = year * 12 + (month - 1) + delta
+    return idx // 12, idx % 12 + 1
+
+
+class CalendarView(discord.ui.View):
+    """이전/다음 달 버튼. 같은 서버의 일정만 다시 그린다."""
+
+    def __init__(self, guild_id: int, year: int, month: int, image: bool = True, timeout: float = 600):
+        super().__init__(timeout=timeout)
+        self.guild_id, self.year, self.month, self.image = guild_id, year, month, image
+
+    async def _go(self, interaction: discord.Interaction, delta: int):
+        if interaction.guild_id != self.guild_id:
+            return await _error(interaction, "❌ 다른 서버의 달력은 넘길 수 없습니다.")
+        y, m = shift_month(self.year, self.month, delta)
+        if not 1900 <= y <= 2200:
+            return await _error(interaction, "❌ 더 이상 넘길 수 없습니다.")
+        self.year, self.month = y, m
+        embed, file = build_calendar_message(self.guild_id, y, m, now_seoul().date(), self.image)
+        await interaction.response.edit_message(embed=embed, attachments=[file] if file else [], view=self,
+                                                allowed_mentions=NO_MENTIONS)
+
+    @discord.ui.button(label="◀ 이전 달", style=discord.ButtonStyle.secondary)
+    async def prev_month(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._go(interaction, -1)
+
+    @discord.ui.button(label="오늘", style=discord.ButtonStyle.primary)
+    async def this_month(self, interaction: discord.Interaction, button: discord.ui.Button):
+        today = now_seoul().date()
+        await self._go(interaction, (today.year * 12 + today.month) - (self.year * 12 + self.month))
+
+    @discord.ui.button(label="다음 달 ▶", style=discord.ButtonStyle.secondary)
+    async def next_month(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._go(interaction, 1)
+
+
+@app_commands.command(name="달력", description="월간 달력(칸 안에 일정 표시)을 보여줍니다.")
+@app_commands.guild_only()
+@app_commands.describe(년="연도 (기본: 올해)", 월="월 (기본: 이번 달)",
+                       이미지="PNG 달력 이미지로 보기 (기본: 켜짐, 끄면 텍스트 달력)")
+async def cmd_calendar(interaction: discord.Interaction,
+                       년: Optional[app_commands.Range[int, 1900, 2200]] = None,
+                       월: Optional[app_commands.Range[int, 1, 12]] = None,
+                       이미지: bool = True):
+    if interaction.guild_id is None:
+        return await _error(interaction, "❌ 일정 기능은 서버에서만 사용할 수 있습니다.")
+    today = now_seoul().date()
+    year = 년 if 년 is not None else today.year
+    month = 월 if 월 is not None else today.month
+    if not (1 <= month <= 12 and 1900 <= year <= 2200):
+        return await _error(interaction, "❌ 연도는 1900~2200, 월은 1~12 사이로 입력해 주세요.")
+    embed, file = build_calendar_message(interaction.guild_id, year, month, today, 이미지)
+    kwargs = {"embed": embed, "allowed_mentions": NO_MENTIONS,
+              "view": CalendarView(interaction.guild_id, year, month, 이미지)}
     if file is not None:
         kwargs["file"] = file
     await interaction.response.send_message(**kwargs)

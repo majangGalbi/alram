@@ -438,7 +438,7 @@ async def test_cmd_calendar_text(store):
     add(store, "행사", datetime(2026, 11, 20, 10))
     add(store, "남의 행사", datetime(2026, 11, 21, 10), guild=G2)
     it = make_it()
-    await sc.cmd_calendar.callback(it)
+    await sc.cmd_calendar.callback(it, None, None, False)
     emb = sent(it).kwargs["embed"]
     assert emb.title == "📆 2026년 11월"
     assert "```" in emb.description and "[ 5]" in emb.description and "20 *" in emb.description
@@ -449,7 +449,7 @@ async def test_cmd_calendar_text(store):
 
 async def test_cmd_calendar_specific_month(store):
     it = make_it()
-    await sc.cmd_calendar.callback(it, 2028, 2)
+    await sc.cmd_calendar.callback(it, 2028, 2, False)
     emb = sent(it).kwargs["embed"]
     assert emb.title == "📆 2028년 2월" and "29" in emb.description and "[" not in emb.description.split("[n]")[0]
 
@@ -753,3 +753,147 @@ def test_bot_registers_calendar():
 
 def test_module_only_exports_register():
     assert sc.__all__ == ["register"]
+
+
+# ─── PNG 달력 (기본 출력) ──────────────────────────────────────────────────
+from PIL import Image  # noqa: E402
+import io  # noqa: E402
+
+REPO_FONT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts", "NanumGothic-Regular.ttf")
+
+
+def test_repo_font_and_license_present():
+    assert os.path.isfile(REPO_FONT)
+    assert os.path.isfile(os.path.join(os.path.dirname(REPO_FONT), "OFL.txt"))
+    assert sc.find_korean_font() == REPO_FONT  # 저장소 폰트가 최우선
+
+
+@pytest.mark.parametrize("y,m,weeks", [(2026, 11, 5), (2026, 8, 6), (2026, 2, 4), (2028, 2, 5)])
+def test_png_size_matches_weeks(y, m, weeks):
+    png = sc.render_month_png(y, m, [], None, font_path=REPO_FONT)
+    img = Image.open(io.BytesIO(png))
+    assert img.format == "PNG"
+    assert img.size == sc.png_size(y, m)
+    assert img.size == (sc.PNG_PAD * 2 + sc.PNG_CELL_W * 7,
+                        sc.PNG_PAD * 2 + sc.PNG_TITLE_H + sc.PNG_HEAD_H + sc.PNG_CELL_H * weeks)
+
+
+def _ev(i, start, all_day=False, end=None, title=None):
+    return sc.Event(i, G1, CH, 1, title or f"일정{i}", "", start, end, all_day, 10, False)
+
+
+def test_cell_labels_fit_and_overflow():
+    d = date(2026, 11, 6)
+    evs = [_ev(i, datetime(2026, 11, 6, 9 + i)) for i in range(sc.PNG_MAX_LINES)]
+    labels = sc.cell_labels(evs, d)
+    assert len(labels) == sc.PNG_MAX_LINES and labels[0] == "09:00 일정0"
+    evs = [_ev(i, datetime(2026, 11, 6, 9, i)) for i in range(12)]
+    labels = sc.cell_labels(evs, d)
+    assert len(labels) == sc.PNG_MAX_LINES
+    assert labels[-1] == f"+{12 - (sc.PNG_MAX_LINES - 1)}개"
+
+
+def test_cell_labels_all_day_and_continued():
+    ev = _ev(1, datetime(2026, 11, 5), all_day=True, end=datetime(2026, 11, 7))
+    assert sc.cell_labels([ev], date(2026, 11, 6)) == ["종일 일정1"]
+    ev2 = _ev(2, datetime(2026, 11, 5, 22), end=datetime(2026, 11, 6, 2))
+    assert sc.cell_labels([ev2], date(2026, 11, 6)) == ["계속 일정2"]
+
+
+def _cell_pixel(y, m, d, dx=60, dy=60):
+    weeks = __import__("calendar").Calendar(firstweekday=6).monthdayscalendar(y, m)
+    for r, week in enumerate(weeks):
+        if d in week:
+            c = week.index(d)
+            return (sc.PNG_PAD + c * sc.PNG_CELL_W + dx, sc.PNG_PAD + sc.PNG_TITLE_H + sc.PNG_HEAD_H + r * sc.PNG_CELL_H + dy)
+
+
+def test_png_today_highlight_and_busy_day():
+    evs = [_ev(i, datetime(2026, 11, 20, 8, i), title="아주아주아주 긴 일정 제목입니다 정말로") for i in range(30)]
+    png = sc.render_month_png(2026, 11, evs, date(2026, 11, 5), font_path=REPO_FONT)
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    assert img.getpixel(_cell_pixel(2026, 11, 5, dx=150, dy=120)) == sc.COLOR_TODAY_BG
+    assert img.getpixel(_cell_pixel(2026, 11, 6, dx=150, dy=120)) == sc.COLOR_BG
+    # 일정 많은 날은 칸 안에 글자가 그려짐(배경색이 아닌 픽셀 존재), 칸 밖으로 넘치지 않음
+    x0, y0 = _cell_pixel(2026, 11, 20, 0, 0)
+    region = img.crop((x0 + 2, y0 + sc.PNG_DAY_H, x0 + sc.PNG_CELL_W - 2, y0 + sc.PNG_CELL_H - 2))
+    assert any(p != sc.COLOR_BG for p in region.getdata())
+    nx, ny = _cell_pixel(2026, 11, 27, 0, 0)  # 바로 아래 칸은 비어 있어야 함
+    below = img.crop((nx + 3, ny + sc.PNG_DAY_H, nx + sc.PNG_CELL_W - 3, ny + sc.PNG_CELL_H - 3))
+    assert all(p == sc.COLOR_BG for p in below.getdata())
+
+
+def test_png_month_boundary_event_only_in_range():
+    ev = _ev(1, datetime(2026, 10, 30), all_day=True, end=datetime(2026, 11, 2))
+    png_nov = sc.render_month_png(2026, 11, [ev], None, font_path=REPO_FONT)
+    img = Image.open(io.BytesIO(png_nov)).convert("RGB")
+    x0, y0 = _cell_pixel(2026, 11, 3, 0, 0)  # 11/3 은 일정 없음
+    assert all(p == sc.COLOR_BG for p in img.crop((x0 + 3, y0 + sc.PNG_DAY_H, x0 + sc.PNG_CELL_W - 3, y0 + sc.PNG_CELL_H - 3)).getdata())
+    x1, y1 = _cell_pixel(2026, 11, 2, 0, 0)  # 11/2 은 일정 있음
+    assert any(p != sc.COLOR_BG for p in img.crop((x1 + 3, y1 + sc.PNG_DAY_H, x1 + sc.PNG_CELL_W - 3, y1 + sc.PNG_CELL_H - 3)).getdata())
+
+
+def test_png_weekend_header_colors():
+    img = Image.open(io.BytesIO(sc.render_month_png(2026, 11, [], None, font_path=REPO_FONT))).convert("RGB")
+    head = img.crop((sc.PNG_PAD, sc.PNG_PAD + sc.PNG_TITLE_H, sc.PNG_PAD + sc.PNG_CELL_W, sc.PNG_PAD + sc.PNG_TITLE_H + sc.PNG_HEAD_H))
+    assert sc.COLOR_SUN in set(head.getdata())
+    sat = img.crop((sc.PNG_PAD + 6 * sc.PNG_CELL_W, sc.PNG_PAD + sc.PNG_TITLE_H, sc.PNG_PAD + 7 * sc.PNG_CELL_W, sc.PNG_PAD + sc.PNG_TITLE_H + sc.PNG_HEAD_H))
+    assert sc.COLOR_SAT in set(sat.getdata())
+
+
+async def test_cmd_calendar_default_is_image_with_view(store):
+    add(store, "팀 회의", datetime(2026, 11, 6, 15))
+    it = make_it()
+    await sc.cmd_calendar.callback(it)
+    kw = sent(it).kwargs
+    assert isinstance(kw["file"], discord.File) and kw["embed"].image.url == "attachment://calendar.png"
+    assert isinstance(kw["view"], sc.CalendarView)
+    assert "팀 회의" in kw["embed"].fields[0].value
+
+
+@pytest.mark.parametrize("y,m,delta,expected", [
+    (2026, 12, 1, (2027, 1)), (2026, 1, -1, (2025, 12)), (2026, 11, 0, (2026, 11)), (2026, 11, 14, (2028, 1)),
+])
+def test_shift_month(y, m, delta, expected):
+    assert sc.shift_month(y, m, delta) == expected
+
+
+async def test_calendar_view_navigation(store):
+    add(store, "1월 일정", datetime(2027, 1, 10, 9))
+    view = sc.CalendarView(G1, 2026, 12, image=False)
+    it = make_it()
+    it.response.edit_message = AsyncMock()
+    await view._go(it, 1)
+    kw = it.response.edit_message.await_args.kwargs
+    assert (view.year, view.month) == (2027, 1)
+    assert kw["embed"].title == "📆 2027년 1월" and "1월 일정" in kw["embed"].fields[0].value
+    assert kw["attachments"] == [] and kw["view"] is view
+    await view._go(it, -2)
+    assert (view.year, view.month) == (2026, 11)
+
+
+async def test_calendar_view_image_attachment(store):
+    view = sc.CalendarView(G1, 2026, 11, image=True)
+    it = make_it()
+    it.response.edit_message = AsyncMock()
+    await view._go(it, 1)
+    att = it.response.edit_message.await_args.kwargs["attachments"]
+    assert len(att) == 1 and isinstance(att[0], discord.File)
+
+
+async def test_calendar_view_other_guild_blocked(store):
+    add(store, "비밀", datetime(2026, 12, 1, 9), guild=G1)
+    view = sc.CalendarView(G1, 2026, 11, image=False)
+    it = make_it(guild_id=G2)
+    it.response.edit_message = AsyncMock()
+    await view._go(it, 1)
+    it.response.edit_message.assert_not_awaited()
+    assert sent(it).kwargs["ephemeral"] is True
+
+
+async def test_calendar_view_range_limit(store):
+    view = sc.CalendarView(G1, 2200, 12, image=False)
+    it = make_it()
+    it.response.edit_message = AsyncMock()
+    await view._go(it, 1)
+    it.response.edit_message.assert_not_awaited()
