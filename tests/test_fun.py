@@ -392,6 +392,30 @@ class TestHandleTeams:
         assert len(sent(it)[1]["embed"].fields) == 2
 
 
+class TestJoinLines:
+    def test_fits(self):
+        assert fun._join_lines(["a", "b"], 100) == "a\nb"
+
+    def test_truncates_on_line_boundary(self):
+        lines = [f"<@{10**17 + i}>" for i in range(99)]
+        out = fun._join_lines(lines, 1024)
+        assert len(out) <= 1024
+        kept = out.split("\n")[:-1]
+        assert all(k in lines for k in kept)  # 잘린 멘션 없음
+        assert out.endswith(f"외 {99 - len(kept)}명")
+
+    def test_empty(self):
+        assert fun._join_lines([], 10) == ""
+
+    async def test_big_voice_channel(self):
+        ms = [SimpleNamespace(id=10**18 + i, bot=False, mention=f"<@{10**18 + i}>") for i in range(99)]
+        it = make_interaction(user=voice_user(ms))
+        await fun.handle_teams(it, 2)
+        e = sent(it)[1]["embed"]
+        assert all(len(f.value) <= 1024 for f in e.fields)
+        assert len(e) <= 6000
+
+
 class TestRegister:
     def test_commands_registered(self):
         from discord import app_commands

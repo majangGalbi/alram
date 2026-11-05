@@ -134,6 +134,21 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _join_lines(lines: Sequence[str], limit: int) -> str:
+    """줄 단위로 합치되 limit 을 넘으면 멘션이 중간에 잘리지 않도록 '외 N명' 으로 줄임."""
+    out: List[str] = []
+    for i, line in enumerate(lines):
+        rest = len(lines) - i
+        tail = f"… 외 {rest}명"
+        candidate = "\n".join(out + [line])
+        # 이 줄을 넣고도 (남은 줄이 있으면) 꼬리말을 붙일 공간이 있어야 함
+        need = len(candidate) + (len("\n" + tail) if rest > 1 else 0)
+        if need > limit:
+            return "\n".join(out + [tail])
+        out.append(line)
+    return "\n".join(out)
+
+
 # ───────────────────── 명령 처리 (테스트에서 직접 호출) ─────────────────────
 
 async def _error(interaction: discord.Interaction, text: str) -> None:
@@ -192,8 +207,7 @@ async def handle_teams(interaction: discord.Interaction, team_count: int = 2, rn
     embed = discord.Embed(title=f"👥 팀 나누기 ({channel_name}, {len(members)}명 → {team_count}팀)",
                           color=discord.Color.blurple())
     for i, team in enumerate(teams, 1):
-        value = "\n".join(m.mention for m in team)
-        embed.add_field(name=f"{i}팀 ({len(team)}명)", value=_clip(value, 1024))
+        embed.add_field(name=f"{i}팀 ({len(team)}명)", value=_join_lines([m.mention for m in team], 1024))
     await interaction.response.send_message(embed=embed, allowed_mentions=NO_PING)
 
 
