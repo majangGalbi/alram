@@ -371,6 +371,40 @@ Heroku 처럼 재시작 때 파일 시스템이 초기화되는 호스팅에서�
 ## 로컬 실행
 
 CI는 Python 3.11 / 3.12 / 3.13에서 테스트합니다.
+## 도움말 (`/도움말`, 웹 `/help`)
+
+- `/도움말 [카테고리]`: 카테고리별 명령 설명·파라미터·예시를 임베드로 보여주고, 드롭다운으로 카테고리를 전환합니다. **본인에게만** 보입니다.
+  `카테고리` 에는 카테고리 이름(예: `투표`) 또는 명령 이름(예: `주사위`)을 넣을 수 있고, 비우면 전체 목록입니다.
+- 명령 목록은 `bot.tree.get_commands()` 에서 이름·설명·파라미터를 읽어 **자동 생성**합니다(`help.py`).
+  카테고리와 예시만 `help.py` 의 `COMMAND_CATEGORIES` / `COMMAND_EXAMPLES` 로 보강하며, 여기에 없는 새 명령은 자동으로 **기타** 로 분류됩니다.
+- keep-alive 웹서버의 `/help` (또는 `/commands`) 경로에서 같은 목록을 HTML 페이지(모바일·다크모드 대응, 카테고리 목차)로 볼 수 있습니다.
+  페이지에는 명령 설명과 초대 안내만 들어가며 서버·사용자 데이터는 포함하지 않습니다. `/` 응답은 그대로입니다.
+
+### 봇 초대 링크 만들기
+
+`CLIENT_ID` 를 [Discord Developer Portal](https://discord.com/developers/applications) → 애플리케이션 → **General Information** 의 **Application ID** 로 바꿔서 접속하세요.
+
+```
+https://discord.com/oauth2/authorize?client_id=CLIENT_ID&permissions=117760&scope=bot+applications.commands
+```
+
+- 스코프: `bot`, `applications.commands` (슬래시 명령 등록)
+- 권한(합계 `117760`):
+
+| 권한 | 비트값 | 쓰는 곳 |
+| --- | --- | --- |
+| 채널 보기 (View Channels) | 1024 | 모든 명령 |
+| 메시지 보내기 (Send Messages) | 2048 | 예약 알림·일정 알림 전송 |
+| 링크 첨부 (Embed Links) | 16384 | 임베드 응답(도움말·투표·랭킹·달력 등) |
+| 파일 첨부 (Attach Files) | 32768 | `/달력` PNG 이미지, `/일정내보내기` .txt |
+| 메시지 기록 보기 (Read Message History) | 65536 | 권장 (채널 메시지 맥락 확인) |
+
+슬래시 명령의 직접 응답은 인터랙션 응답으로 가지만, 예약 알림·일정 알림처럼 봇이 채널에 **직접 보내는 메시지**에는 위 채널 권한이 필요합니다.
+
+- 인텐트: **MESSAGE CONTENT** (특권 — 포털 **Bot → Privileged Gateway Intents** 에서 켜기), `voice_states` (기본 포함, `/팀나누기`).
+  **SERVER MEMBERS** 는 필요 없습니다. (자세한 내용은 위 "필요한 인텐트" 참고)
+
+## 개발
 
 ```bash
 python -m venv .venv
