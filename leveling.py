@@ -119,9 +119,14 @@ class LevelStore:
 
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or os.getenv(DB_PATH_ENV) or DEFAULT_DB_PATH
-        parent = os.path.dirname(os.path.abspath(self.db_path))
-        os.makedirs(parent, exist_ok=True)
-        with self._connect() as conn:
+        self._initialized = False  # DB 파일·테이블은 첫 사용 시 생성 (import 만으로 파일을 만들지 않음)
+
+    def _connect(self) -> sqlite3.Connection:
+        if not self._initialized:
+            os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+        conn = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        if not self._initialized:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS levels (
@@ -145,10 +150,7 @@ class LevelStore:
                 );
                 """
             )
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
-        conn.execute("PRAGMA busy_timeout = 10000")
+            self._initialized = True
         return conn
 
     # XP ---------------------------------------------------------------------

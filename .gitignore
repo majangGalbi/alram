@@ -32,3 +32,5 @@ polls.db
 *.db-journal
 # 출석체크 SQLite DB
 attendance.db
+# 채팅 레벨 SQLite DB (LEVELING_DB_PATH 기본값)
+leveling.db
