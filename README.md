@@ -1,8 +1,48 @@
 # alram
 
-디스코드 알림 예약 봇입니다. `/예약` 명령으로 지정한 시간에 특정 사용자를 태그해 메시지를 보냅니다.
+디스코드 서버용 다기능 봇입니다. 지정한 시간에 사용자를 태그하는 **알림 예약**(단발·반복)을 중심으로
+**버튼 투표**, **출석체크**, **뽑기 도구**, **서버 달력 일정표**를 제공합니다. 모든 시간은 한국 시간(Asia/Seoul) 기준입니다.
 
-## `/예약` 의 `일시` 입력 형식
+## 목차
+
+- [전체 명령어](#전체-명령어)
+- [알림 예약 (`/예약`)](#알림-예약-예약)
+- [버튼 투표](#버튼-투표-투표-투표마감)
+- [출석체크](#출석체크-출석-출석현황-랭킹)
+- [뽑기 도구](#뽑기-도구-주사위-뽑기-팀나누기)
+- [서버 달력 일정표](#서버-달력-일정표-schedule_calendarpy)
+- [데이터 저장 위치](#데이터-저장-위치)
+- [환경변수](#환경변수)
+- [디스코드 인텐트 설정](#디스코드-인텐트-설정)
+- [로컬 실행](#로컬-실행)
+- [개발 / 테스트 / 린트](#개발--테스트--린트)
+- [배포](#배포)
+
+## 전체 명령어
+
+| 분류 | 명령 | 설명 | 사용 위치 |
+| --- | --- | --- | --- |
+| 알림 예약 | `/예약 일시 멘션 메시지` | 지정한 시각(또는 반복 규칙)에 대상을 태그해 메시지 전송 | 서버·DM |
+| 알림 예약 | `/예약목록` | 현재 서버의 대기 중인 예약 목록 | 서버·DM |
+| 알림 예약 | `/예약취소 번호` | 예약(반복 포함) 취소 | 서버·DM |
+| 투표 | `/투표 질문 항목 [마감] [중복허용] [익명]` | 버튼으로 참여하는 투표 생성 | 서버 |
+| 투표 | `/투표마감 메시지id` | 투표 수동 마감 (만든 사람/관리자) | 서버 |
+| 출석 | `/출석` | 하루 1회 출석, 포인트 지급 | 서버 |
+| 출석 | `/출석현황 [사용자]` | 누적·연속 기록과 이번 달 출석 달력 | 서버 |
+| 출석 | `/랭킹 [기준]` | 서버 출석 랭킹 상위 10명 | 서버 |
+| 뽑기 | `/주사위 [표현식]` | `NdM+K` 주사위 | 서버·DM |
+| 뽑기 | `/뽑기 항목 [개수]` | 쉼표로 구분한 항목 중 무작위 추첨 | 서버·DM |
+| 뽑기 | `/팀나누기 [팀수]` | 내 음성 채널 멤버를 무작위 팀 분배 | 서버 |
+| 일정 | `/일정추가` · `/일정수정` · `/일정삭제` | 서버 일정 관리 | 서버 |
+| 일정 | `/일정목록 [기간]` · `/달력 [년] [월] [이미지]` | 일정 목록 / 월간 달력 | 서버 |
+| 일정 | `/일정일괄추가 [파일]` · `/일정내보내기 [기간]` | 여러 일정 일괄 등록 / 파일로 내보내기 | 서버 |
+
+## 알림 예약 (`/예약`)
+
+`/예약 일시:<시간> 멘션:<사용자> 메시지:<내용>` 으로 지정한 시간에 대상 사용자를 태그해 메시지를 보냅니다.
+예약 확인 메시지는 아무도 핑하지 않고(멘션은 표시만), 실제 알림 때만 대상 사용자 한 명을 핑합니다.
+
+### `/예약` 의 `일시` 입력 형식
 
 시간 해석은 [`time_parser.py`](time_parser.py)가 맡습니다. 모든 시간은 **한국 시간(Asia/Seoul)** 기준입니다.
 띄어쓰기는 자유롭게 해도 되고(`내일오후3시` = `내일 오후 3시`), 전각 문자(`１５：３０`)도 됩니다.
@@ -10,7 +50,7 @@
 
 아래 예시는 **2026-11-05(목) 14:00에 입력했다고 가정**한 결과입니다.
 
-### 상대 시간
+#### 상대 시간
 
 | 입력 | 결과 |
 | --- | --- |
@@ -23,7 +63,7 @@
 | `in 10 minutes`, `in 1h30m`, `in an hour`, `in half an hour` | 영어 상대 시간 |
 | `10 minutes later`, `2 hours from now`, `after 15 minutes` | 영어 상대 시간 |
 
-### 날짜 + 시각
+#### 날짜 + 시각
 
 | 입력 | 결과 |
 | --- | --- |
@@ -38,7 +78,7 @@
 | `20일 오후 3시`, `다음달 3일 오후 3시`, `이번달 20일 오후 3시` | 이번 달 / 다음 달 해당 일 |
 | `11월 6일 금요일 9시` | 요일이 날짜와 맞는지 확인 후 11-06 09:00 |
 
-### 시각만
+#### 시각만
 
 | 입력 | 결과 |
 | --- | --- |
@@ -50,12 +90,12 @@
 | `자정`, `midnight`, `밤 12시`, `24시` | 다가오는 00:00 |
 | `새벽 3시`, `밤 3시` | 내일 03:00 |
 
-### 영어
+#### 영어
 
 `tomorrow 7am`, `7am tomorrow`, `tmr 9am`, `tomorrow at 7:30 pm`, `today 5pm`, `tonight 9pm`,
 `day after tomorrow 10am`, `next monday 9am`, `friday 6pm`, `noon tomorrow`
 
-### 해석 규칙
+#### 해석 규칙
 
 - **날짜 없이 시각만** 입력하면 **가장 가까운 미래**로 잡습니다.
   오전/오후가 없으면 `3시`는 03:00과 15:00 중 먼저 오는 시각, 이미 지났으면 다음 날입니다.
@@ -70,7 +110,18 @@
 - `오전/새벽/아침`은 0~12시, `오후`는 12~23시, `낮`/`점심`은 그 시간대에 맞춰 계산하고,
   `저녁`은 오후, `밤 1~5시`는 다음 날 새벽으로 계산합니다.
 
-## 반복 예약 (🔁)
+#### 거부되는 입력 (사유를 함께 안내)
+
+| 입력 | 이유 |
+| --- | --- |
+| `내일 3시 회의`, `5분 후 알림` | 해석할 수 없는 글자가 섞여 있음 (추측하지 않음) |
+| `내일`, `다음주 월요일`, `오후`, `30분` | 시각이나 단위가 빠짐 |
+| `25시`, `오후 15시`, `3시 60분`, `2월 30일 3시` | 범위를 벗어나거나 존재하지 않는 날짜 |
+| `3시 30분 뒤`, `내일 30분 뒤` | 상대 시간과 시각/날짜를 동시에 씀 (모호함) |
+| `11월 6일 토요일 9시`, `내일 월요일 3시` | 날짜와 요일이 맞지 않음 |
+| `730`, `3 30`, `3:3` | 형식이 모호함 |
+
+### 반복 예약 (🔁)
 
 `/예약`의 `일시`에 반복 표현을 쓰면 **반복 알림**으로 등록됩니다(한국 시간 기준).
 해석은 `time_parser.parse_recurrence()`가 맡고, 봇은 APScheduler `CronTrigger`/`IntervalTrigger`로 등록합니다.
@@ -108,38 +159,7 @@
 `매주 9시`(요일 없음), `매월 9시`(날짜 없음), `매일`(시각 없음), `30분마다 9시`(간격과 시각 동시 사용),
 `매월 말일 자정`(날짜가 넘어가 모호), `매일 3시 회의`(해석할 수 없는 글자)
 
-### 거부되는 입력 (사유를 함께 안내)
-
-| 입력 | 이유 |
-| --- | --- |
-| `내일 3시 회의`, `5분 후 알림` | 해석할 수 없는 글자가 섞여 있음 (추측하지 않음) |
-| `내일`, `다음주 월요일`, `오후`, `30분` | 시각이나 단위가 빠짐 |
-| `25시`, `오후 15시`, `3시 60분`, `2월 30일 3시` | 범위를 벗어나거나 존재하지 않는 날짜 |
-| `3시 30분 뒤`, `내일 30분 뒤` | 상대 시간과 시각/날짜를 동시에 씀 (모호함) |
-| `11월 6일 토요일 9시`, `내일 월요일 3시` | 날짜와 요일이 맞지 않음 |
-| `730`, `3 30`, `3:3` | 형식이 모호함 |
-
-## 환경변수
-
-| 이름 | 필수 | 기본값 | 설명 |
-| --- | --- | --- | --- |
-| `DISCORD_BOT_TOKEN` | 예 | 없음 | 디스코드 봇 토큰. 없으면 봇이 시작하지 않고 종료합니다. |
-| `PORT` | 아니오 | `8080` | keep-alive 웹서버(Flask, `GET /`) 포트. Heroku/Render 등은 자동으로 지정합니다. |
-
-로컬에서는 [`.env.example`](.env.example)을 `.env`로 복사해 값을 채우면 `bot.py`가 `python-dotenv`로 읽습니다.
-`.env`는 `.gitignore`에 들어 있어 커밋되지 않습니다.
-
-## 로컬 실행
-
-CI는 Python 3.11 / 3.12 / 3.13에서 테스트합니다.
-
-```bash
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env               # DISCORD_BOT_TOKEN 입력
-python bot.py
-## 예약 저장 (재시작 후에도 유지)
+### 예약 저장 (재시작 후에도 유지)
 
 예약은 SQLite 파일에 저장되어 봇을 재시작·재배포해도 유지됩니다
 (APScheduler `SQLAlchemyJobStore`, 시작 시 `⏰ 스케줄러가 시작되었습니다. (저장된 예약 N건)` 로그).
@@ -159,12 +179,13 @@ python bot.py
 - 예약 작업은 DB에 `"bot:send_ping"` 함수 참조와 기본 타입 인자로 저장됩니다.
   `send_ping`의 이름·위치·인자 이름을 바꾸면 이미 저장된 예약을 복원하지 못하니 주의하세요.
 
-## 슬래시 명령 응답
+### 응답 공개 범위
 
 - `/예약`: 입력이 잘못되면(시간 해석 실패·과거 시각·메시지 길이 초과) **본인에게만** 오류가 보이고,
   예약에 성공하면 채널의 모두에게 확인 메시지가 보입니다.
 - `/예약목록`: 예약이 없으면 본인에게만 안내, 있으면 현재 서버의 예약을 공개로 표시합니다.
 - `/예약취소`: 성공은 공개, 번호를 찾지 못하면 본인에게만 안내합니다.
+
 ## 버튼 투표 (/투표, /투표마감)
 
 ```
@@ -188,8 +209,9 @@ python bot.py
 - 서버 채널에서만 사용 가능하며, 다른 서버의 투표는 조회·마감할 수 없습니다. 서버당 진행 중 투표는 최대 50개.
 - 질문/항목에 `@everyone`, 역할 멘션을 넣어도 알림이 울리지 않습니다.
 - 투표 데이터는 SQLite 파일에 저장되어 **봇을 재시작해도 진행 중인 투표의 버튼과 자동 마감이 유지**됩니다.
-  저장 경로는 환경변수 `POLLS_DB_PATH`(기본 `polls.db`). Heroku 등 파일 시스템이 휘발성인 호스팅에서는
+  저장 경로는 환경변수 `POLLS_DB_PATH`(기본 `bot.py` 옆의 `polls.db`). Heroku 등 파일 시스템이 휘발성인 호스팅에서는
   영구 디스크 경로를 지정해야 재배포 후에도 유지됩니다.
+
 ## 출석체크 (`/출석`, `/출석현황`, `/랭킹`)
 
 | 명령 | 설명 |
@@ -208,7 +230,7 @@ python bot.py
 연속 출석은 어제 출석했으면 이어지고, 하루라도 빠지면 다음 출석 때 1일부터 다시 시작합니다.
 `/출석현황`·`/랭킹(연속)` 에서는 어제까지 출석이 이어진 경우만 연속으로 표시하고, 끊긴 기록은 0일로 보여줍니다(최장 연속은 유지).
 
-데이터는 SQLite 파일에 저장됩니다. 경로는 환경변수 `ATTENDANCE_DB_PATH` 로 지정하며 기본값은 실행 위치의 `attendance.db` 입니다(첫 사용 시 생성).
+데이터는 SQLite 파일에 저장됩니다. 경로는 환경변수 `ATTENDANCE_DB_PATH` 로 지정하며 기본값은 `bot.py` 옆의 `attendance.db` 입니다(첫 사용 시 생성).
 `(서버, 사용자, 날짜)` UNIQUE 제약과 `BEGIN IMMEDIATE` 트랜잭션으로 같은 날 중복 출석·동시 요청 중복 지급을 막습니다.
 Heroku 처럼 파일시스템이 재시작 때 초기화되는 호스팅에서는 영구 디스크 경로를 `ATTENDANCE_DB_PATH` 로 지정해야 기록이 유지됩니다.
 
@@ -223,11 +245,6 @@ Heroku 처럼 파일시스템이 재시작 때 초기화되는 호스팅에서�
 난수는 `random.SystemRandom`(운영체제 난수원, `secrets` 모듈과 같은 소스)을 사용합니다.
 사용자가 입력한 텍스트에 `@everyone`·`@here`·역할 멘션이 있어도 알림이 가지 않도록 `AllowedMentions.none()` 으로 보냅니다(팀나누기 결과의 멤버 멘션도 알림 없이 표시만 됨). 입력 오류는 본인에게만 보입니다.
 
-### 필요한 인텐트 / 디스코드 개발자 포털 설정
-
-- `/팀나누기` 는 음성 채널 참가자를 봇의 캐시에서 읽으므로 **`voice_states` 인텐트**가 필요합니다. `discord.Intents.default()` 에 이미 포함되어 있고 특권(Privileged) 인텐트가 아니므로 **포털에서 따로 켤 것은 없습니다.** (꺼져 있으면 봇 시작 시 경고를 출력합니다.)
-- 봇은 기존 기능 때문에 `message_content` 인텐트를 사용합니다. 이 인텐트는 특권 인텐트이므로 [Discord Developer Portal](https://discord.com/developers/applications) → 애플리케이션 선택 → **Bot** → **Privileged Gateway Intents** 에서 **MESSAGE CONTENT INTENT** 가 켜져 있어야 합니다.
-- **SERVER MEMBERS INTENT** 는 이 기능들에 필요하지 않습니다. 다만 `/랭킹` 에서 봇 캐시에 없는 멤버는 이름 대신 `<@아이디>` 멘션 형태(알림 없음)로 표시됩니다.
 ## 서버 달력 일정표 (`schedule_calendar.py`)
 
 서버(길드)마다 따로 관리되는 일정표입니다. 모든 시간은 한국 시간(Asia/Seoul) 기준이며, DM 에서는 사용할 수 없습니다.
@@ -276,63 +293,70 @@ Heroku 처럼 파일시스템이 재시작 때 초기화되는 호스팅에서�
 
 | 이름 | 기본값 | 설명 |
 |---|---|---|
-| `CALENDAR_DB_PATH` | `calendar.db` | 일정 SQLite 파일 경로 |
+| `CALENDAR_DB_PATH` | `bot.py` 옆의 `calendar.db` | 일정 SQLite 파일 경로 |
 | `CALENDAR_FONT_PATH` | (저장소 나눔고딕 다음 순위) | 이미지 달력에 쓸 한글 TTF/TTC/OTF 폰트 |
 
-## 개발
+## 데이터 저장 위치
+
+모든 데이터는 SQLite 파일에 저장되며, 기본값은 실행 위치와 관계없이 **`bot.py` 와 같은 폴더**입니다.
+파일은 첫 사용 시 자동으로 만들어지고 `.gitignore`·`.dockerignore` 에 포함되어 커밋/이미지에 들어가지 않습니다.
+
+| 기능 | 파일 | 경로 환경변수 |
+| --- | --- | --- |
+| 알림 예약 | `jobs.sqlite` | `JOBS_DB_PATH` (또는 SQLAlchemy URL `JOBS_DB_URL`) |
+| 투표 | `polls.db` | `POLLS_DB_PATH` |
+| 출석체크 | `attendance.db` | `ATTENDANCE_DB_PATH` |
+| 일정표 | `calendar.db` | `CALENDAR_DB_PATH` |
+
+Heroku 처럼 재시작 때 파일 시스템이 초기화되는 호스팅에서는 위 경로를 영구 디스크로 지정해야 데이터가 유지됩니다.
+
+## 환경변수
+
+| 이름 | 필수 | 기본값 | 설명 |
+| --- | --- | --- | --- |
+| `DISCORD_BOT_TOKEN` | 예 | 없음 | 디스코드 봇 토큰. 없으면 봇이 시작하지 않고 종료합니다. |
+| `PORT` | 아니오 | `8080` | keep-alive 웹서버(Flask, `GET /`) 포트. Heroku/Render 등은 자동으로 지정합니다. |
+| `JOBS_DB_PATH` / `JOBS_DB_URL` | 아니오 | `bot.py` 옆 `jobs.sqlite` | 예약 저장 위치 ([예약 저장](#예약-저장-재시작-후에도-유지)) |
+| `POLLS_DB_PATH` | 아니오 | `bot.py` 옆 `polls.db` | 투표 저장 위치 |
+| `ATTENDANCE_DB_PATH` | 아니오 | `bot.py` 옆 `attendance.db` | 출석 저장 위치 |
+| `CALENDAR_DB_PATH` | 아니오 | `bot.py` 옆 `calendar.db` | 일정 저장 위치 |
+| `CALENDAR_FONT_PATH` | 아니오 | (저장소 나눔고딕 다음 순위) | 이미지 달력용 한글 폰트 |
+
+로컬에서는 [`.env.example`](.env.example)을 `.env`로 복사해 값을 채우면 `bot.py`가 `python-dotenv`로 읽습니다.
+`.env`는 `.gitignore`에 들어 있어 커밋되지 않습니다.
+
+## 디스코드 인텐트 설정
+
+
+- `/팀나누기` 는 음성 채널 참가자를 봇의 캐시에서 읽으므로 **`voice_states` 인텐트**가 필요합니다. `discord.Intents.default()` 에 이미 포함되어 있고 특권(Privileged) 인텐트가 아니므로 **포털에서 따로 켤 것은 없습니다.** (꺼져 있으면 봇 시작 시 경고를 출력합니다.)
+- 봇은 기존 기능 때문에 `message_content` 인텐트를 사용합니다. 이 인텐트는 특권 인텐트이므로 [Discord Developer Portal](https://discord.com/developers/applications) → 애플리케이션 선택 → **Bot** → **Privileged Gateway Intents** 에서 **MESSAGE CONTENT INTENT** 가 켜져 있어야 합니다.
+- **SERVER MEMBERS INTENT** 는 이 기능들에 필요하지 않습니다. 다만 `/랭킹` 에서 봇 캐시에 없는 멤버는 이름 대신 `<@아이디>` 멘션 형태(알림 없음)로 표시됩니다.
+
+## 로컬 실행
+
+CI는 Python 3.11 / 3.12 / 3.13에서 테스트합니다.
 
 ```bash
-pip install -r requirements-dev.txt
-python -m pytest                          # 전체 (디스코드 연결 없이 mock / 임시 SQLite)
-python -m pytest tests/test_time_parser.py # 파서만
-python -m pytest
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env               # DISCORD_BOT_TOKEN 입력
+python bot.py
 ```
 
-## 테스트 / 린트
+## 개발 / 테스트 / 린트
 
 ```bash
 pip install -r requirements-dev.txt ruff==0.17.3
-python -m pytest -q                # 전체 테스트 (tests/)
-python -m pytest tests/test_time_parser.py   # 파서 테스트만
-ruff check .                       # 린트 (설정: ruff.toml)
+python -m pytest -q                          # 전체 테스트 (디스코드 연결 없이 mock / 임시 SQLite)
+python -m pytest tests/test_time_parser.py   # 시간 파서만
+ruff check .                                 # 린트 (설정: ruff.toml)
 ```
 
 `ruff format` 같은 자동 포맷은 사용하지 않습니다. 린트 규칙은 버그성 경고 위주(`E4`/`E7`/`E9`/`F`/`B`)만 켜 두었습니다.
 push / PR 마다 GitHub Actions([`.github/workflows/ci.yml`](.github/workflows/ci.yml))가 같은 테스트와 린트를 실행합니다.
 
-## 배포
-
-### Docker
-
-```bash
-docker build -t alram .
-docker run -d --name alram --env-file .env -p 8080:8080 alram
-```
-
-컨테이너는 `python bot.py`(Procfile의 `web` 프로세스와 같은 명령)를 실행합니다.
-`PORT`를 바꾸면 `-p` 의 컨테이너 쪽 포트도 맞춰 주세요(예: `-e PORT=3000 -p 3000:3000`).
-
-### Procfile 기반 호스팅 (Heroku 등)
-
-[`Procfile`](Procfile)의 `web: python bot.py`가 그대로 쓰입니다. 플랫폼 설정에서 `DISCORD_BOT_TOKEN`을 지정하세요.
-`PORT`는 플랫폼이 주입합니다.
-
-### 주의
-
-- 예약은 메모리(APScheduler)에만 저장되므로 **프로세스/컨테이너가 재시작되면 예약이 사라집니다.**
-전체 테스트(봇·투표 포함): `pip install -r requirements-dev.txt && python -m pytest`
-
-전체 테스트 (출석체크·뽑기 포함):
-
-```bash
-pip install -r requirements-dev.txt
-python -m pytest
-pip install pytest pytz
-python -m pytest tests/test_time_parser.py
-python -m pytest tests/test_schedule_calendar.py   # discord.py 필요
-```
-
-파서 API:
+### 시간 파서 API
 
 ```python
 from time_parser import parse_time, parse_korean_time, TimeParseError
@@ -347,3 +371,22 @@ r.kind, r.description                       # ("cron", "매주 월·수·금 오
 r.trigger_kwargs()                          # {"day_of_week": "mon,wed,fri", "hour": 9, "minute": 0, "second": 0}
 parse_recurrence("2시간마다").trigger_kwargs()  # {"seconds": 7200} → IntervalTrigger
 ```
+
+## 배포
+
+### Docker
+
+```bash
+docker build -t alram .
+docker run -d --name alram --env-file .env -p 8080:8080 alram
+```
+
+컨테이너는 `python bot.py`(Procfile의 `web` 프로세스와 같은 명령)를 실행합니다.
+모든 DB 파일은 컨테이너 안 `/app/data` 에 저장됩니다(Dockerfile 의 `*_DB_PATH` 환경변수). 컨테이너를 지우거나 새 이미지로 바꿔도
+유지하려면 볼륨을 연결하세요: `docker run ... -v alram-data:/app/data alram`
+`PORT`를 바꾸면 `-p` 의 컨테이너 쪽 포트도 맞춰 주세요(예: `-e PORT=3000 -p 3000:3000`).
+
+### Procfile 기반 호스팅 (Heroku 등)
+
+[`Procfile`](Procfile)의 `web: python bot.py`가 그대로 쓰입니다. 플랫폼 설정에서 `DISCORD_BOT_TOKEN`을 지정하세요.
+`PORT`는 플랫폼이 주입합니다.
