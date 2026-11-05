@@ -2,6 +2,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime
 import os
 import pytz
@@ -10,6 +12,7 @@ from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv
 from time_parser import parse_time, TimeParseError  # 💡 시간 텍스트 파싱 (time_parser.py)
+from time_parser import is_recurring, parse_recurrence  # 🔁 반복 예약 표현 파싱
 
 load_dotenv()
 
@@ -35,6 +38,8 @@ MAX_MESSAGE_LENGTH = 1500        # 디스코드 메시지 2000자 제한(멘션 
 JOB_ID_LENGTH = 4
 EMBED_MAX_FIELDS = 25            # 디스코드 임베드 필드 최대 개수
 EMBED_FIELD_VALUE_LIMIT = 1024   # 디스코드 임베드 필드 값 최대 길이
+MAX_RECURRING_JOBS_PER_SCOPE = 25  # 서버(또는 DM)당 반복 예약 최대 개수 (도배 방지)
+SEOUL_TZ = "Asia/Seoul"
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -84,7 +89,20 @@ def truncate(text, limit):
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-async def send_ping(channel_id, user_id, message, scope=None, target_name=None):
+def build_trigger(recurrence):
+    """Recurrence → APScheduler 트리거 (한국 시간 기준). 트리거 객체는 pickle 가능해 영구 저장소와 호환됨."""
+    if recurrence.kind == "interval":
+        return IntervalTrigger(timezone=SEOUL_TZ, **recurrence.trigger_kwargs())
+    return CronTrigger(timezone=SEOUL_TZ, **recurrence.trigger_kwargs())
+
+
+def count_recurring_jobs(scheduler, scope):
+    return sum(1 for job in scheduler.get_jobs()
+               if job.kwargs.get("scope") == scope and job.kwargs.get("recurrence"))
+
+
+# 작업 함수는 모듈 수준 함수, kwargs 는 기본 타입(int/str)만 사용 → SQLAlchemyJobStore 등으로 직렬화 가능
+async def send_ping(channel_id, user_id, message, scope=None, target_name=None, recurrence=None):
     try:
         channel = bot.get_channel(channel_id)
         if channel is None:
@@ -101,7 +119,7 @@ async def send_ping(channel_id, user_id, message, scope=None, target_name=None):
 # [3] 슬래시 명령어: /예약 (통합 및 한국어 텍스트 입력 방식)
 @bot.tree.command(name="예약", description="지정한 한국어 시간에 특정 사용자를 태그하는 알림을 예약합니다.")
 @app_commands.describe(
-    일시="예: 2026년 5월 23일 오후 1시 30분 0초 (또는 '내일 오후 3시', '10분 뒤')",
+    일시="예: '내일 오후 3시', '10분 뒤', 반복: '매일 오전 7시', '매주 월수금 9시', '2시간마다'",
     멘션="태그할 사람을 선택하세요",
     메시지="알림과 함께 보낼 메시지를 적어주세요"
 )
@@ -116,6 +134,11 @@ async def schedule_notification(
     seoul_tz = pytz.timezone("Asia/Seoul")
     current_time = datetime.now(seoul_tz)
 
+    # 🔁 '매일', '매주 월요일', '30분마다' 같은 반복 표현은 반복 예약으로 처리
+    if is_recurring(일시):
+        await schedule_recurring(interaction, 일시, 멘션, 메시지, current_time)
+        return
+
     # 💡 time_parser 로 한국어/영어/숫자 형식의 시간 텍스트를 datetime 으로 변환합니다.
     #    해석할 수 없거나 모호한 입력은 TimeParseError(사유 포함)로 실패합니다. (README 참고)
     try:
@@ -126,7 +149,8 @@ async def schedule_notification(
             "**올바른 예시:**\n"
             "• `30분 뒤`, `1시간 반 뒤`\n"
             "• `오늘 오후 8시`, `내일 오전 11시 30분`, `모레 아침 7시 반`\n"
-            "• `다음주 월요일 9시`, `2026년 11월 5일 오전 9시`",
+            "• `다음주 월요일 9시`, `2026년 11월 5일 오전 9시`\n"
+            "• 반복: `매일 오전 7시`, `매주 월수금 9시`, `2시간마다`",
             ephemeral=True
         )
         return
@@ -172,6 +196,67 @@ async def schedule_notification(
         f"💬 **내용:** {메시지}"
     )
 
+async def schedule_recurring(interaction, 일시, 멘션, 메시지, current_time):
+    """/예약 의 반복 예약 처리: CronTrigger / IntervalTrigger 로 등록."""
+    try:
+        recurrence = parse_recurrence(일시, current_time)
+    except TimeParseError as e:
+        await interaction.followup.send(
+            f"❌ 반복 시간을 인식할 수 없습니다: {e}\n"
+            "**반복 예약 예시:**\n"
+            "• `매일 오전 7시`, `평일 8시 30분`, `주말 오전 10시`\n"
+            "• `매주 월요일 9시`, `매주 월수금 오후 6시`, `매주 월~금 9시`\n"
+            "• `매월 1일 오전 9시`, `매월 말일 오후 6시`, `매년 12월 25일 오전 9시`\n"
+            "• `30분마다`, `2시간마다`, `매시간`, `every day 7am`",
+            ephemeral=True
+        )
+        return
+
+    if len(메시지) > MAX_MESSAGE_LENGTH:
+        await interaction.followup.send(f"❌ 메시지는 {MAX_MESSAGE_LENGTH}자 이하로 입력해 주세요.", ephemeral=True)
+        return
+
+    scope = job_scope(interaction)
+    if count_recurring_jobs(bot.scheduler, scope) >= MAX_RECURRING_JOBS_PER_SCOPE:
+        await interaction.followup.send(
+            f"❌ 반복 예약은 서버당 최대 {MAX_RECURRING_JOBS_PER_SCOPE}개까지 등록할 수 있습니다. "
+            "`/예약목록`에서 확인 후 `/예약취소`로 정리해 주세요.",
+            ephemeral=True
+        )
+        return
+
+    trigger = build_trigger(recurrence)
+    next_run = trigger.get_next_fire_time(None, current_time)
+    if next_run is None:
+        await interaction.followup.send("❌ 앞으로 실행될 시각이 없는 반복 규칙입니다. 다시 확인해 주세요.", ephemeral=True)
+        return
+
+    job_id = generate_job_id(bot.scheduler)
+    bot.scheduler.add_job(
+        send_ping,
+        trigger=trigger,
+        kwargs={
+            "channel_id": interaction.channel_id,
+            "user_id": 멘션.id,
+            "message": 메시지,
+            "scope": scope,
+            "target_name": 멘션.display_name,
+            "recurrence": recurrence.description,
+        },
+        id=job_id,
+        name=f"{멘션.display_name} | {메시지}"
+    )
+
+    await interaction.followup.send(
+        f"✅ 반복 알림 예약 완료!\n"
+        f"🆔 **예약 번호(ID):** {job_id}\n"
+        f"🔁 **반복:** {recurrence.description}\n"
+        f"⏭️ **다음 알림:** {format_korean_time(next_run)}\n"
+        f"👤 **대상:** {멘션.mention}\n"
+        f"💬 **내용:** {메시지}\n"
+        f"(그만 받으려면 `/예약취소 {job_id}`)"
+    )
+
 # [4] 슬래시 명령어: /예약목록
 @bot.tree.command(name="예약목록", description="현재 대기 중인 알림 예약 목록을 보여줍니다.")
 async def list_jobs(interaction: discord.Interaction):
@@ -192,8 +277,13 @@ async def list_jobs(interaction: discord.Interaction):
         msg = job.kwargs.get("message") or "내용 없음"
 
         run_time_str = format_korean_time(job.next_run_time) if job.next_run_time else "일시정지됨"
+        recurrence = job.kwargs.get("recurrence")
         
-        value = f"📅 **일시:** {run_time_str}\n👤 **대상:** {target}\n💬 **내용:** {msg}"
+        if recurrence:
+            value = (f"🔁 **반복:** {recurrence}\n⏭️ **다음 알림:** {run_time_str}\n"
+                     f"👤 **대상:** {target}\n💬 **내용:** {msg}")
+        else:
+            value = f"📅 **일시:** {run_time_str}\n👤 **대상:** {target}\n💬 **내용:** {msg}"
         embed.add_field(
             name=f"🆔 번호(ID): {job.id}",
             value=truncate(value, EMBED_FIELD_VALUE_LIMIT),
@@ -214,8 +304,9 @@ async def cancel_job(interaction: discord.Interaction, 번호: str):
     
     # 다른 서버의 예약은 번호를 알아도 취소할 수 없도록 범위 확인
     if job and job.kwargs.get("scope") == job_scope(interaction):
+        kind = "반복 알림" if job.kwargs.get("recurrence") else "알림"
         job.remove()
-        await interaction.response.send_message(f"🗑️ 예약 번호 `{번호}` 알림이 성공적으로 취소되었습니다!")
+        await interaction.response.send_message(f"🗑️ 예약 번호 `{번호}` {kind}이 성공적으로 취소되었습니다!")
     else:
         await interaction.response.send_message(f"❌ 예약 번호 `{번호}`를 찾을 수 없습니다. 번호를 다시 확인해 주세요.", ephemeral=True)
 

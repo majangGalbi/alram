@@ -670,7 +670,7 @@ _REC_BARE_RE = re.compile(r"매주|매월|매달|매년|해마다|everymonth|mon
 
 # 1회성 '이번 주말' 같은 표현은 반복으로 보지 않는다.
 _RECURRING_HINT_RE = re.compile(
-    _RECURRING_RE.pattern + r"|(?<!이번)(?<!다음)(?<!담)(?<!지난)주말|평일|주중|weekdays?|weekends?|hourly|매시|해마다|날마다"
+    _RECURRING_RE.pattern + r"|(?<!이번)(?<!다음)(?<!담)(?<!지난)주말|평일|주중|weekdays?|weekends?|hourly|매시|해마다|날마다|간격|에한번"
 )
 
 
@@ -799,6 +799,12 @@ def parse_recurrence(text: str, base_time: Optional[datetime] = None) -> Recurre
     def _found(kind, payload):
         found.append((kind, payload))
 
+    # '매월 15일마다' 가 '15일마다'(간격)로 잘못 잡히지 않도록 월/연 단위를 먼저 꺼낸다.
+    for m in t.take_all(_REC_MONTHLY_RE):
+        d = m.group("d") or m.group("d2")
+        _found("monthly", "last" if (m.group("last") or m.group("last2")) else int(d))
+    for m in t.take_all(_REC_YEARLY_RE):
+        _found("yearly", (int(m.group("m")), int(m.group("d"))))
     for m in t.take_all(_REC_INTERVAL_KO_RE):
         _found("interval_ko", m.group("dur"))
     for m in t.take_all(_REC_INTERVAL_EN_RE):
@@ -812,11 +818,6 @@ def parse_recurrence(text: str, base_time: Optional[datetime] = None) -> Recurre
         _found("days", set(range(5)))
     for _ in t.take_all(_REC_WEEKEND_RE):
         _found("days", {5, 6})
-    for m in t.take_all(_REC_MONTHLY_RE):
-        d = m.group("d") or m.group("d2")
-        _found("monthly", "last" if (m.group("last") or m.group("last2")) else int(d))
-    for m in t.take_all(_REC_YEARLY_RE):
-        _found("yearly", (int(m.group("m")), int(m.group("d"))))
     for m in t.take_all(_REC_WEEKLY_RE):
         if m.group("en"):
             items = [(_EN_WEEKDAYS[x["a"]], _EN_WEEKDAYS[x["b"]] if x["b"] else None)
