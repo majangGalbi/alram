@@ -2,8 +2,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.events import EVENT_JOB_MISSED
 from datetime import datetime
 import os
+import sys
 import pytz
 import uuid
 from flask import Flask
@@ -12,6 +15,10 @@ from dotenv import load_dotenv
 from time_parser import parse_time, TimeParseError  # 💡 시간 텍스트 파싱 (time_parser.py)
 
 load_dotenv()
+
+# `python bot.py` 로 실행하면 이 모듈 이름이 '__main__' 이 됨. 예약 작업은 DB에 "bot:send_ping" 처럼
+# 모듈 경로 문자열로 저장되므로, 실행 방식과 무관하게 같은 모듈(같은 bot 객체)로 복원되도록 'bot' 이름으로도 등록
+sys.modules.setdefault("bot", sys.modules[__name__])
 
 # [1] 24시간 호스팅 웹서버 세팅
 app = Flask('')
@@ -35,6 +42,42 @@ MAX_MESSAGE_LENGTH = 1500        # 디스코드 메시지 2000자 제한(멘션 
 JOB_ID_LENGTH = 4
 EMBED_MAX_FIELDS = 25            # 디스코드 임베드 필드 최대 개수
 EMBED_FIELD_VALUE_LIMIT = 1024   # 디스코드 임베드 필드 값 최대 길이
+SEND_PING_REF = "bot:send_ping"  # DB에 저장되는 알림 함수 참조 (함수 이름/위치를 바꾸면 기존 예약 복원 실패)
+DEFAULT_JOBS_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jobs.sqlite")
+
+
+def jobs_db_url():
+    """예약 저장 DB 주소. JOBS_DB_URL(SQLAlchemy URL) > JOBS_DB_PATH(SQLite 파일 경로) > 기본 jobs.sqlite."""
+    url = os.getenv("JOBS_DB_URL")
+    if url:
+        return url
+    path = os.getenv("JOBS_DB_PATH") or DEFAULT_JOBS_DB_PATH
+    return "sqlite:///" + os.path.abspath(path)
+
+
+def ensure_sqlite_dir(url):
+    """SQLite 파일의 상위 폴더가 없으면 DB 생성이 실패하므로 미리 만듦."""
+    prefix = "sqlite:///"
+    if url.startswith(prefix) and url != prefix + ":memory:":
+        folder = os.path.dirname(url[len(prefix):])
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+
+
+def create_scheduler(db_url=None):
+    """예약을 SQLite(기본)에 영구 저장하는 스케줄러. 재시작 후에도 예약이 유지됨."""
+    return AsyncIOScheduler(
+        timezone="Asia/Seoul",
+        jobstores={"default": SQLAlchemyJobStore(url=db_url or jobs_db_url())},
+        # misfire_grace_time 기본값은 1초라 이벤트 루프가 잠깐만 밀려도 알림이 조용히 누락됨.
+        # 재시작 중 지나간 예약도 이 시간 이내면 시작 직후 1회 전송, 넘으면 건너뜀(coalesce: 여러 번 밀려도 1회)
+        job_defaults={"misfire_grace_time": MISFIRE_GRACE_SECONDS, "coalesce": True},
+    )
+
+
+def log_missed_job(event):
+    """허용 시간(MISFIRE_GRACE_SECONDS)을 넘겨 실행되지 못한 예약을 로그로 남김."""
+    print(f"⚠️ 예약 {event.job_id} 이(가) 지연 허용 시간을 넘겨 전송되지 않았습니다 (예정: {event.scheduled_run_time}).")
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -46,15 +89,13 @@ class MyBot(commands.Bot):
             # 사용자가 입력한 메시지 속 @everyone/@here/역할 멘션이 봇 권한으로 발송되지 않도록 차단
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=False),
         )
-        # misfire_grace_time 기본값은 1초라 이벤트 루프가 잠깐만 밀려도 알림이 조용히 누락됨
-        self.scheduler = AsyncIOScheduler(
-            timezone="Asia/Seoul",
-            job_defaults={"misfire_grace_time": MISFIRE_GRACE_SECONDS, "coalesce": True},
-        )
+        self.scheduler = create_scheduler()
+        self.scheduler.add_listener(log_missed_job, EVENT_JOB_MISSED)
 
     async def setup_hook(self):
         await self.tree.sync()
-        self.scheduler.start()
+        ensure_sqlite_dir(jobs_db_url())
+        self.scheduler.start()  # DB에 저장된 예약을 불러옴
         print("⏰ 스케줄러가 시작되었습니다.")
 
 bot = MyBot()
@@ -85,6 +126,7 @@ def truncate(text, limit):
 
 
 async def send_ping(channel_id, user_id, message, scope=None, target_name=None):
+    # 이 함수는 DB에 SEND_PING_REF("bot:send_ping") 로 저장됨: 모듈 수준 함수여야 하고 인자는 기본 타입(int/str)만 사용
     try:
         channel = bot.get_channel(channel_id)
         if channel is None:
@@ -111,8 +153,8 @@ async def schedule_notification(
     멘션: discord.Member, 
     메시지: str
 ):
-    await interaction.response.defer(ephemeral=False)
-    
+    # 입력 검증은 defer 전에 끝냄. 공개 defer(ephemeral=False) 뒤 첫 followup 은 지연 응답을 대체하므로
+    # ephemeral=True 를 줘도 공개로 표시됨 → 오류는 첫 응답(send_message ephemeral=True)으로 본인에게만 보냄
     seoul_tz = pytz.timezone("Asia/Seoul")
     current_time = datetime.now(seoul_tz)
 
@@ -121,7 +163,7 @@ async def schedule_notification(
     try:
         parsed_date = parse_time(일시, current_time)
     except TimeParseError as e:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"❌ 날짜/시간을 인식할 수 없습니다: {e}\n"
             "**올바른 예시:**\n"
             "• `30분 뒤`, `1시간 반 뒤`\n"
@@ -136,18 +178,21 @@ async def schedule_notification(
     
     # 과거의 시간인지 검증
     if run_date < current_time:
-        await interaction.followup.send("❌ 현재 시간보다 이전 시간은 예약할 수 없습니다.", ephemeral=True)
+        await interaction.response.send_message("❌ 현재 시간보다 이전 시간은 예약할 수 없습니다.", ephemeral=True)
         return
 
     if len(메시지) > MAX_MESSAGE_LENGTH:
-        await interaction.followup.send(f"❌ 메시지는 {MAX_MESSAGE_LENGTH}자 이하로 입력해 주세요.", ephemeral=True)
+        await interaction.response.send_message(f"❌ 메시지는 {MAX_MESSAGE_LENGTH}자 이하로 입력해 주세요.", ephemeral=True)
         return
+
+    # 검증 통과 후에만 공개 defer (DB 저장 중 3초 응답 제한 대비). 성공 메시지는 모두에게 보임
+    await interaction.response.defer(ephemeral=False)
 
     # 겹치지 않는 4자리 고유 ID 생성
     job_id = generate_job_id(bot.scheduler)
 
     bot.scheduler.add_job(
-        send_ping,
+        SEND_PING_REF,  # 함수 객체 대신 문자열 참조로 저장 (재시작 후 복원 가능)
         'date',
         run_date=run_date,
         kwargs={

@@ -16,3 +16,6 @@ pip-delete-this-directory.txt
 # 운영체제 생성 파일
 .DS_Store
 Thumbs.db
+# 예약 저장 DB (JOBS_DB_PATH 기본값)
+jobs.sqlite
+*.sqlite-journal
