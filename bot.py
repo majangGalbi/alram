@@ -19,6 +19,7 @@ from time_parser import is_recurring, parse_recurrence  # 🔁 반복 예약 표
 import polls  # 🗳️ 버튼 투표 (/투표, /투표마감)
 import attendance  # /출석 /출석현황 /랭킹
 import fun  # /주사위 /뽑기 /팀나누기
+import schedule_calendar  # 📅 서버 달력 일정표 (schedule_calendar.py)
 
 load_dotenv()
 
@@ -112,6 +113,7 @@ bot = MyBot()
 polls.register(bot)
 attendance.register(bot)
 fun.register(bot)
+schedule_calendar.register(bot)
 
 def job_scope(interaction):
     """예약을 구분하는 범위: 서버(길드) 단위, DM이면 채널 단위."""

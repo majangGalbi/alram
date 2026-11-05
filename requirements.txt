@@ -5,3 +5,4 @@ pytz
 Flask
 python-dotenv
 dateparser
+Pillow
