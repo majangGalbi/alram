@@ -20,6 +20,7 @@ import polls  # 🗳️ 버튼 투표 (/투표, /투표마감)
 import attendance  # /출석 /출석현황 /랭킹
 import fun  # /주사위 /뽑기 /팀나누기
 import schedule_calendar  # 📅 서버 달력 일정표 (schedule_calendar.py)
+import leveling  # 💬 채팅 레벨·경험치 (/레벨 /레벨랭킹 /레벨설정 /레벨보상)
 
 load_dotenv()
 
@@ -130,6 +131,7 @@ polls.register(bot)
 attendance.register(bot)
 fun.register(bot)
 schedule_calendar.register(bot)
+leveling.register(bot)
 
 def job_scope(interaction):
     """예약을 구분하는 범위: 서버(길드) 단위, DM이면 채널 단위."""
