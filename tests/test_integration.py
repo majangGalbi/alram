@@ -118,3 +118,22 @@ async def test_schedule_confirmation_does_not_ping(when, tmp_path, monkeypatch):
         assert am.users is False and am.roles is False and am.everyone is False
     finally:
         r.stop()
+
+
+def test_dockerfile_copies_all_local_modules_and_data_dir():
+    import re
+    with open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8") as f:
+        docker = f.read()
+    with open(os.path.join(ROOT, "bot.py"), encoding="utf-8") as f:
+        src = f.read()
+    local = {m for m in re.findall(r"^(?:import|from)\s+(\w+)", src, re.M)
+             if os.path.exists(os.path.join(ROOT, m + ".py"))}
+    assert {"polls", "attendance", "fun", "schedule_calendar", "time_parser"} <= local
+    copied = " ".join(re.findall(r"^COPY\s+(.+)$", docker, re.M))
+    for m in local:
+        assert "*.py" in copied or f"{m}.py" in copied, m
+    assert "fonts" in copied
+    # 모든 DB 가 non-root 사용자가 쓸 수 있는 /app/data 아래로
+    for env in ("JOBS_DB_PATH", "POLLS_DB_PATH", "ATTENDANCE_DB_PATH", "CALENDAR_DB_PATH"):
+        assert f"{env}=/app/data/" in docker, env
+    assert "chown appuser:appuser /app/data" in docker
