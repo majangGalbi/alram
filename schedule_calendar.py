@@ -302,6 +302,38 @@ class CalendarStore:
         self.conn.commit()
         return cur.rowcount == 1
 
+    def exists(self, guild_id: int, title: str, start: datetime) -> bool:
+        r = self.conn.execute("SELECT 1 FROM events WHERE guild_id = ? AND title = ? AND start_ts = ? LIMIT 1",
+                              (guild_id, title, _fmt_ts(start))).fetchone()
+        return r is not None
+
+    def bulk_add(self, guild_id: int, channel_id: int, creator_id: int, items: List["BulkItem"],
+                 now: Optional[datetime] = None) -> Tuple[int, int]:
+        """한 트랜잭션으로 일괄 INSERT. 같은 제목+같은 시작 일시(기존 또는 배치 안)는 건너뜀.
+
+        :returns: (추가 수, 중복으로 건너뛴 수)
+        """
+        created = _fmt_ts(now or now_seoul())
+        added = skipped = 0
+        seen = set()
+        with self.conn:  # 하나의 트랜잭션: 예외 시 전체 롤백
+            for it in items:
+                key = (it.title, _fmt_ts(it.start))
+                if key in seen or self.exists(guild_id, it.title, it.start):
+                    skipped += 1
+                    continue
+                seen.add(key)
+                self.conn.execute(
+                    """INSERT INTO events (guild_id, channel_id, creator_id, title, description, start_ts, end_ts,
+                                           all_day, remind_minutes, remind_at, reminded, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0, ?)""",
+                    (guild_id, channel_id, creator_id, it.title, it.description, _fmt_ts(it.start),
+                     int(it.all_day), it.remind_minutes,
+                     _fmt_ts(compute_remind_at(it.start, it.all_day, it.remind_minutes)), created),
+                )
+                added += 1
+        return added, skipped
+
     def due_reminders(self, now: datetime) -> List[Event]:
         """알림 시각이 되었고 아직 발송하지 않은 일정 (모든 서버)."""
         rows = self.conn.execute(
@@ -843,7 +875,276 @@ async def cmd_delete(interaction: discord.Interaction, 번호: int):
     )
 
 
-COMMANDS = (cmd_add, cmd_list, cmd_calendar, cmd_edit, cmd_delete)
+# ─────────────────────────────────────────────────────────────────────────────
+# 일괄 등록 / 내보내기
+# ─────────────────────────────────────────────────────────────────────────────
+BULK_MAX_LINES = 1000
+BULK_MAX_BYTES = 512 * 1024
+BULK_MODAL_MAX = 4000
+BULK_FORMAT_HELP = "형식: `날짜 [시각] | 제목 | 설명(선택) | 알림N분전(선택)` 예) `2026-11-20 14:00 | 팀 회의 | 3층 | 30`"
+
+_BULK_DATE_RE = re.compile(r"^(?:(?P<y>\d{4})[-/.])?(?P<m>\d{1,2})[-/.](?P<d>\d{1,2})\.?$")
+_BULK_TIME_RE = re.compile(r"^(?P<h>\d{1,2}):(?P<mi>\d{2})$")
+_BULK_REMIND_RE = re.compile(r"^(?:알림)?\s*(?P<n>-?\d+)\s*(?:분)?\s*(?:전)?$")
+
+
+@dataclass
+class BulkItem:
+    line_no: int
+    start: datetime
+    all_day: bool
+    title: str
+    description: str = ""
+    remind_minutes: Optional[int] = DEFAULT_REMIND_MINUTES
+
+
+class BulkParseError(ValueError):
+    """파일 전체를 처리할 수 없을 때 (인코딩, 줄 수 초과 등)."""
+
+
+def decode_bulk_bytes(data: bytes) -> str:
+    """UTF-8(BOM 포함) → CP949 순으로 시도."""
+    for enc in ("utf-8-sig", "cp949"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    raise BulkParseError("파일 인코딩을 알 수 없습니다. UTF-8 또는 CP949(EUC-KR)로 저장해 주세요.")
+
+
+def _bulk_datetime(date_s: str, time_s: str, now: datetime) -> Tuple[datetime, bool]:
+    m = _BULK_DATE_RE.match(date_s.strip())
+    if not m:
+        raise ValueError(f"날짜 형식 오류 '{truncate(date_s.strip(), 20)}' (예: 2026-11-20, 11/27)")
+    month, day = int(m.group("m")), int(m.group("d"))
+    t = None
+    if time_s.strip():
+        tm = _BULK_TIME_RE.match(time_s.strip())
+        if not tm or not (0 <= int(tm.group("h")) <= 23 and 0 <= int(tm.group("mi")) <= 59):
+            raise ValueError(f"시각 형식 오류 '{truncate(time_s.strip(), 20)}' (예: 14:00)")
+        t = time(int(tm.group("h")), int(tm.group("mi")))
+
+    def build(year):
+        return datetime.combine(date(year, month, day), t or time.min)
+
+    try:
+        if m.group("y"):
+            dt = build(int(m.group("y")))
+        else:  # 연도 생략: 가장 가까운 미래 (종일이면 오늘도 포함)
+            dt = None
+            for year in range(now.year, now.year + 9):
+                try:
+                    cand = build(year)
+                except ValueError:
+                    continue  # 2월 29일 등
+                if (cand.date() >= now.date()) if t is None else (cand >= now):
+                    dt = cand
+                    break
+            if dt is None:
+                raise ValueError
+    except ValueError:
+        raise ValueError(f"존재하지 않는 날짜 '{date_s.strip()}'") from None
+    return dt, t is None
+
+
+def _bulk_item(line_no: int, date_s: str, time_s: str, title: str, desc: str, remind: str, now: datetime) -> BulkItem:
+    start, all_day = _bulk_datetime(date_s, time_s, now)
+    title = clean_text(title, TITLE_MAX)
+    if not title:
+        raise ValueError("제목이 비어 있습니다")
+    remind = (remind or "").strip()
+    if remind:
+        rm = _BULK_REMIND_RE.match(remind)
+        if not rm or not -1 <= int(rm.group("n")) <= MAX_REMIND_MINUTES:
+            raise ValueError(f"알림 값 오류 '{truncate(remind, 20)}' (-1 ~ {MAX_REMIND_MINUTES})")
+        minutes = int(rm.group("n"))
+        remind_minutes = None if minutes == -1 else minutes
+    else:
+        remind_minutes = DEFAULT_REMIND_MINUTES
+    return BulkItem(line_no, start, all_day, title, clean_text(desc, DESCRIPTION_MAX), remind_minutes)
+
+
+def parse_bulk_text(text: str, now: datetime) -> Tuple[List[BulkItem], List[Tuple[int, str]]]:
+    """일괄 등록 텍스트 해석 → (성공 항목, [(줄번호, 사유)]).
+
+    파이프(|) 형식과 CSV(헤더: 날짜,시각,제목,설명,알림) 형식을 모두 지원한다.
+    '#' 로 시작하는 줄과 빈 줄은 무시. 데이터 줄이 1000개를 넘으면 BulkParseError.
+    """
+    import csv
+
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    data = [(i + 1, l) for i, l in enumerate(lines) if l.strip() and not l.strip().startswith("#")]
+    if not data:
+        raise BulkParseError("등록할 일정이 없습니다. " + BULK_FORMAT_HELP)
+    header = [h.strip().lstrip("\ufeff") for h in next(csv.reader([data[0][1]]))]
+    is_csv = "|" not in data[0][1] and "날짜" in header and "제목" in header
+    if is_csv:
+        data = data[1:]
+    if len(data) > BULK_MAX_LINES:
+        raise BulkParseError(f"한 번에 최대 {BULK_MAX_LINES}줄까지 등록할 수 있습니다. (현재 {len(data)}줄)")
+    items, errors = [], []
+    for line_no, line in data:
+        try:
+            if is_csv:
+                row = next(csv.reader([line]))
+                rec = dict(zip(header, row + [""] * (len(header) - len(row))))
+                items.append(_bulk_item(line_no, rec.get("날짜", ""), rec.get("시각", ""), rec.get("제목", ""),
+                                        rec.get("설명", ""), rec.get("알림", ""), now))
+            else:
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) < 2:
+                    raise ValueError("'|' 로 날짜와 제목을 구분해 주세요")
+                if len(parts) > 4:
+                    raise ValueError("칸이 너무 많습니다 (최대 4칸)")
+                parts += [""] * (4 - len(parts))
+                when = parts[0].split()
+                if not 1 <= len(when) <= 2:
+                    raise ValueError("첫 칸은 '날짜' 또는 '날짜 시각' 이어야 합니다")
+                items.append(_bulk_item(line_no, when[0], when[1] if len(when) == 2 else "",
+                                        parts[1], parts[2], parts[3], now))
+        except ValueError as e:
+            errors.append((line_no, str(e) or "형식 오류"))
+    return items, errors
+
+
+def _export_field(s: str) -> str:
+    return (s or "").replace("|", "｜").replace("\r", " ").replace("\n", " ").strip()
+
+
+def export_events_text(events: List[Event]) -> str:
+    """일괄 등록과 같은 형식으로 내보내기 (종료 일시는 형식에 없어 제외)."""
+    out = ["# 날짜 [시각] | 제목 | 설명 | 알림(분 전, -1=없음)"]
+    for ev in events:
+        when = ev.start.strftime("%Y-%m-%d") if ev.all_day else ev.start.strftime("%Y-%m-%d %H:%M")
+        remind = -1 if ev.remind_minutes is None else ev.remind_minutes
+        out.append(f"{when} | {_export_field(ev.title)} | {_export_field(ev.description)} | {remind}")
+    return "\n".join(out) + "\n"
+
+
+def build_bulk_preview(items: List[BulkItem], errors: List[Tuple[int, str]]) -> discord.Embed:
+    color = 0x57F287 if items and not errors else 0xFEE75C if items else 0xED4245
+    embed = discord.Embed(title="📥 일정 일괄 등록 미리보기", color=color)
+    embed.description = f"✅ 등록 가능 **{len(items)}건** · ❌ 오류 **{len(errors)}줄**"
+    if items:
+        sample = []
+        for it in items[:10]:
+            when = it.start.strftime("%Y-%m-%d") + (" (종일)" if it.all_day else it.start.strftime(" %H:%M"))
+            sample.append(truncate(f"{it.line_no}줄: {when} · {discord.utils.escape_markdown(it.title)}", 100))
+        if len(items) > 10:
+            sample.append(f"… 외 {len(items) - 10}건")
+        embed.add_field(name="앞부분 샘플", value=truncate("\n".join(sample), EMBED_FIELD_VALUE_LIMIT), inline=False)
+    if errors:
+        lines, used = [], 0
+        for i, (n, why) in enumerate(errors):
+            line = truncate(f"{n}줄: {why}", 120)
+            if used + len(line) + 1 > EMBED_FIELD_VALUE_LIMIT - 20:
+                lines.append(f"… 외 {len(errors) - i}줄")
+                break
+            lines.append(line)
+            used += len(line) + 1
+        embed.add_field(name="오류 줄", value="\n".join(lines), inline=False)
+    embed.set_footer(text="같은 제목+같은 일시의 일정은 등록 시 건너뜁니다. 오류 줄은 제외하고 등록됩니다.")
+    return embed
+
+
+class BulkConfirmView(discord.ui.View):
+    def __init__(self, owner_id: int, guild_id: int, channel_id: int, items: List[BulkItem], timeout: float = 300):
+        super().__init__(timeout=timeout)
+        self.owner_id, self.guild_id, self.channel_id, self.items = owner_id, guild_id, channel_id, items
+        self.done = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await _error(interaction, "❌ 일괄 등록을 시작한 사람만 누를 수 있습니다.")
+            return False
+        return True
+
+    async def do_confirm(self, interaction: discord.Interaction):
+        if self.done:
+            return await _error(interaction, "이미 처리된 요청입니다.")
+        self.done = True
+        self.stop()
+        added, skipped = get_store().bulk_add(self.guild_id, self.channel_id, self.owner_id, self.items)
+        await interaction.response.edit_message(
+            content=f"✅ 일정 {added}건을 등록했습니다." + (f" (중복 {skipped}건 건너뜀)" if skipped else ""),
+            embed=None, view=None, allowed_mentions=NO_MENTIONS)
+
+    async def do_cancel(self, interaction: discord.Interaction):
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(content="취소했습니다.", embed=None, view=None)
+
+    @discord.ui.button(label="등록", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.do_confirm(interaction)
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.do_cancel(interaction)
+
+
+async def _send_bulk_preview(interaction: discord.Interaction, text: str):
+    try:
+        items, errors = parse_bulk_text(text, now_seoul())
+    except BulkParseError as e:
+        return await _error(interaction, f"❌ {e}")
+    view = BulkConfirmView(interaction.user.id, interaction.guild_id, interaction.channel_id, items) if items else None
+    kwargs = {"embed": build_bulk_preview(items, errors), "ephemeral": True, "allowed_mentions": NO_MENTIONS}
+    if view is not None:
+        kwargs["view"] = view
+    await interaction.response.send_message(**kwargs)
+
+
+class BulkModal(discord.ui.Modal, title="일정 일괄 등록"):
+    body = discord.ui.TextInput(label="한 줄에 일정 하나 (날짜 [시각] | 제목 | 설명 | 알림)",
+                                style=discord.TextStyle.paragraph, max_length=BULK_MODAL_MAX,
+                                placeholder="2026-11-20 14:00 | 팀 회의 | 3층 회의실 | 30\n2026-11-25 | 창립기념일")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await _send_bulk_preview(interaction, str(self.body.value))
+
+
+@app_commands.command(name="일정일괄추가", description="여러 일정을 한 번에 등록합니다 (.txt/.csv 첨부 또는 입력창).")
+@app_commands.guild_only()
+@app_commands.describe(파일="한 줄에 일정 하나: 날짜 [시각] | 제목 | 설명 | 알림  (없으면 입력창이 열림)")
+async def cmd_bulk_add(interaction: discord.Interaction, 파일: Optional[discord.Attachment] = None):
+    if interaction.guild_id is None:
+        return await _error(interaction, "❌ 일정 기능은 서버에서만 사용할 수 있습니다.")
+    if 파일 is None:
+        return await interaction.response.send_modal(BulkModal())
+    name = (파일.filename or "").lower()
+    if not name.endswith((".txt", ".csv")):
+        return await _error(interaction, "❌ .txt 또는 .csv 파일만 올릴 수 있습니다.")
+    if 파일.size > BULK_MAX_BYTES:
+        return await _error(interaction, f"❌ 파일이 너무 큽니다. (최대 {BULK_MAX_BYTES // 1024}KB)")
+    try:
+        text = decode_bulk_bytes(await 파일.read())
+    except BulkParseError as e:
+        return await _error(interaction, f"❌ {e}")
+    except discord.HTTPException:
+        return await _error(interaction, "❌ 첨부 파일을 읽지 못했습니다. 다시 시도해 주세요.")
+    await _send_bulk_preview(interaction, text)
+
+
+@app_commands.command(name="일정내보내기", description="일정을 일괄 등록과 같은 형식의 .txt 파일로 내보냅니다.")
+@app_commands.guild_only()
+@app_commands.describe(기간="내보낼 기간 (기본: 이번달)")
+async def cmd_export(interaction: discord.Interaction,
+                     기간: Literal["오늘", "이번주", "이번달", "다음달", "전체"] = "이번달"):
+    if interaction.guild_id is None:
+        return await _error(interaction, "❌ 일정 기능은 서버에서만 사용할 수 있습니다.")
+    if 기간 == "전체":
+        start, end = date(1900, 1, 1), date(2201, 1, 1)
+    else:
+        start, end = period_range(기간, now_seoul().date())
+    events = get_store().list_range(interaction.guild_id, start, end)
+    data = export_events_text(events).encode("utf-8")
+    await interaction.response.send_message(
+        f"📤 {기간} 일정 {len(events)}건을 내보냈습니다. `/일정일괄추가` 로 다시 불러올 수 있습니다.",
+        file=discord.File(io.BytesIO(data), filename="일정.txt"), ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+
+COMMANDS = (cmd_add, cmd_list, cmd_calendar, cmd_edit, cmd_delete, cmd_bulk_add, cmd_export)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

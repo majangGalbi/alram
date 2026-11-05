@@ -897,3 +897,252 @@ async def test_calendar_view_range_limit(store):
     it.response.edit_message = AsyncMock()
     await view._go(it, 1)
     it.response.edit_message.assert_not_awaited()
+
+
+# ─── 일괄 등록 / 내보내기 ──────────────────────────────────────────────────
+EXAMPLE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "일정_예시.txt")
+
+
+def test_bulk_parse_pipe_format():
+    text = "# 주석\n\n2026-11-20 14:00 | 팀 회의 | 3층 회의실 | 30\n2026-11-25 | 창립기념일\n11/27 19:30 | 회식\n"
+    items, errors = sc.parse_bulk_text(text, NOW)
+    assert errors == []
+    a, b, c = items
+    assert (a.line_no, a.start, a.all_day, a.title, a.description, a.remind_minutes) == \
+        (3, datetime(2026, 11, 20, 14), False, "팀 회의", "3층 회의실", 30)
+    assert b.all_day and b.start == datetime(2026, 11, 25) and b.remind_minutes == 10
+    assert c.start == datetime(2026, 11, 27, 19, 30)
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("11/5 14:00 | 지난 시각", datetime(2027, 11, 5, 14)),    # 오늘이지만 이미 지남 → 내년
+    ("11/5 16:00 | 오늘 나중", datetime(2026, 11, 5, 16)),
+    ("11/5 | 오늘 종일", datetime(2026, 11, 5)),              # 종일은 오늘 포함
+    ("1/3 | 새해", datetime(2027, 1, 3)),
+    ("2/29 | 윤일", datetime(2028, 2, 29)),                   # 다음 윤년
+    ("2026.12.25 | 점 구분", datetime(2026, 12, 25)),
+    ("2026/12/25 9:05 | 슬래시", datetime(2026, 12, 25, 9, 5)),
+])
+def test_bulk_year_inference(line, expected):
+    items, errors = sc.parse_bulk_text(line, NOW)
+    assert errors == [] and items[0].start == expected
+
+
+@pytest.mark.parametrize("line,reason", [
+    ("2026-13-01 | x", "존재하지 않는 날짜"),
+    ("2027-02-29 | x", "존재하지 않는 날짜"),
+    ("2026-11-20 25:00 | x", "시각 형식"),
+    ("2026-11-20 3시 | x", "시각 형식"),
+    ("내일 | x", "날짜 형식"),
+    ("2026-11-20", "'|'"),
+    ("2026-11-20 |   ", "제목이 비어"),
+    ("2026-11-20 | x | y | 알림많이", "알림 값"),
+    ("2026-11-20 | x | y | 99999", "알림 값"),
+    ("2026-11-20 | a | b | 1 | 초과", "칸이 너무"),
+    ("2026-11-20 10:00 extra | x", "첫 칸"),
+])
+def test_bulk_error_lines(line, reason):
+    items, errors = sc.parse_bulk_text("2026-11-30 | 정상\n" + line, NOW)
+    assert len(items) == 1 and len(errors) == 1
+    assert errors[0][0] == 2 and reason in errors[0][1]
+
+
+@pytest.mark.parametrize("val,expected", [("30", 30), ("30분전", 30), ("알림30분전", 30), ("0", 0), ("-1", None), ("", 10)])
+def test_bulk_remind_values(val, expected):
+    items, errors = sc.parse_bulk_text(f"2026-11-20 10:00 | x | | {val}", NOW)
+    assert errors == [] and items[0].remind_minutes == expected
+
+
+def test_bulk_csv_format():
+    text = "날짜,시각,제목,설명,알림\n2026-11-20,14:00,팀 회의,\"3층, 큰 회의실\",30\n2026-11-25,,창립기념일,,\n,,빈날짜,,\n"
+    items, errors = sc.parse_bulk_text(text, NOW)
+    assert [i.title for i in items] == ["팀 회의", "창립기념일"]
+    assert items[0].description == "3층, 큰 회의실" and items[1].all_day
+    assert errors[0][0] == 4
+
+
+def test_bulk_crlf_and_bom():
+    data = "﻿2026-11-20 14:00 | 회의\r\n2026-11-21 | 휴가\r\n".encode("utf-8")
+    items, errors = sc.parse_bulk_text(sc.decode_bulk_bytes(data), NOW)
+    assert [i.title for i in items] == ["회의", "휴가"] and errors == []
+
+
+@pytest.mark.parametrize("enc", ["utf-8", "utf-8-sig", "cp949"])
+def test_bulk_decode_encodings(enc):
+    text = "2026-11-20 | 한글 제목 테스트\n"
+    assert sc.decode_bulk_bytes(text.encode(enc)).lstrip("﻿") == text
+
+
+def test_bulk_decode_unknown():
+    with pytest.raises(sc.BulkParseError):
+        sc.decode_bulk_bytes(b"\xff\xfe\xff\xfe\x80\x81\xff")
+
+
+def test_bulk_line_limit():
+    ok = "\n".join(f"2026-12-01 | 일정{i}" for i in range(1000))
+    items, errors = sc.parse_bulk_text("# 주석은 세지 않음\n\n" + ok, NOW)
+    assert len(items) == 1000 and errors == []
+    with pytest.raises(sc.BulkParseError, match="1000"):
+        sc.parse_bulk_text(ok + "\n2026-12-02 | 초과", NOW)
+
+
+def test_bulk_empty():
+    with pytest.raises(sc.BulkParseError):
+        sc.parse_bulk_text("# 주석만\n\n", NOW)
+
+
+def test_bulk_title_truncated():
+    items, _ = sc.parse_bulk_text("2026-11-20 | " + "가" * 300, NOW)
+    assert len(items[0].title) == sc.TITLE_MAX
+
+
+def test_bulk_add_dedup_and_transaction(store):
+    add(store, "기존", datetime(2026, 11, 20, 14))
+    items, _ = sc.parse_bulk_text("2026-11-20 14:00 | 기존\n2026-11-21 | 새것\n2026-11-21 | 새것\n2026-11-21 | 다른것", NOW)
+    assert store.bulk_add(G1, CH, 10, items) == (2, 2)
+    assert store.bulk_add(G1, CH, 10, items) == (0, 4)  # 다시 넣어도 전부 중복
+    titles = [e.title for e in store.list_range(G1, date(2026, 11, 1), date(2026, 12, 1))]
+    assert sorted(titles) == ["기존", "다른것", "새것"]
+    # 다른 서버는 중복 판정과 무관
+    assert store.bulk_add(G2, CH, 10, items) == (3, 1)
+
+
+def test_bulk_add_rollback_on_error(store, monkeypatch):
+    items, _ = sc.parse_bulk_text("2026-11-21 | a\n2026-11-22 | b", NOW)
+    items[1].title = None  # NOT NULL 위반 → 전체 롤백
+    with pytest.raises(Exception):
+        store.bulk_add(G1, CH, 10, items)
+    assert store.list_range(G1, date(2026, 11, 1), date(2026, 12, 1)) == []
+
+
+def test_bulk_reminders_scheduled(store):
+    items, _ = sc.parse_bulk_text("2026-11-20 14:00 | x | | 30", NOW)
+    store.bulk_add(G1, CH, 10, items)
+    ev = store.list_range(G1, date(2026, 11, 20), date(2026, 11, 21))[0]
+    assert store.remind_at(ev.id) == datetime(2026, 11, 20, 13, 30)
+
+
+def test_export_import_roundtrip(store):
+    add(store, "회의 | 중요", datetime(2026, 11, 20, 14), desc="줄1\n줄2", remind=30)
+    add(store, "휴가", datetime(2026, 11, 21), all_day=True, remind=None)
+    add(store, "즉시", datetime(2026, 11, 22, 9, 5), remind=0)
+    events = store.list_range(G1, *sc.month_range(2026, 11))
+    text = sc.export_events_text(events)
+    items, errors = sc.parse_bulk_text(text, NOW)
+    assert errors == []
+    got = [(i.start, i.all_day, i.title, i.description, i.remind_minutes) for i in items]
+    assert got == [
+        (datetime(2026, 11, 20, 14), False, "회의 ｜ 중요", "줄1 줄2", 30),
+        (datetime(2026, 11, 21), True, "휴가", "", None),
+        (datetime(2026, 11, 22, 9, 5), False, "즉시", "", 0),
+    ]
+    # 다른 서버로 왕복 등록
+    assert store.bulk_add(G2, CH, 1, items) == (3, 0)
+
+
+def test_example_file_parses():
+    items, errors = sc.parse_bulk_text(open(EXAMPLE, encoding="utf-8").read(), NOW)
+    assert errors == [] and len(items) == 5
+
+
+def test_bulk_preview_embed_limits():
+    items, errors = sc.parse_bulk_text("\n".join(["2026-11-20 | " + "가" * 100] * 50 + ["잘못된 줄 " * 20] * 200), NOW)
+    emb = sc.build_bulk_preview(items, errors)
+    assert "50건" in emb.description and "200줄" in emb.description
+    assert all(len(f.value) <= sc.EMBED_FIELD_VALUE_LIMIT for f in emb.fields)
+    assert len(emb) <= sc.EMBED_TOTAL_LIMIT
+
+
+def make_attachment(data: bytes, filename="일정.txt"):
+    att = MagicMock()
+    att.filename = filename
+    att.size = len(data)
+    att.read = AsyncMock(return_value=data)
+    return att
+
+
+async def test_cmd_bulk_add_file_preview_then_confirm(store):
+    it = make_it()
+    att = make_attachment("2026-11-20 14:00 | 팀 회의\n2026-11-25 | 창립기념일\n잘못\n".encode("cp949"))
+    await sc.cmd_bulk_add.callback(it, att)
+    kw = sent(it).kwargs
+    assert kw["ephemeral"] is True and "2건" in kw["embed"].description and "1줄" in kw["embed"].description
+    view = kw["view"]
+    assert store.list_range(G1, *sc.month_range(2026, 11)) == []  # 확인 전에는 등록 안 됨
+    click = make_it()
+    click.response.edit_message = AsyncMock()
+    await view.do_confirm(click)
+    assert "2건" in click.response.edit_message.await_args.kwargs["content"]
+    assert len(store.list_range(G1, *sc.month_range(2026, 11))) == 2
+    await view.do_confirm(click)  # 두 번 눌러도 중복 등록 없음
+    assert len(store.list_range(G1, *sc.month_range(2026, 11))) == 2
+
+
+async def test_bulk_cancel(store):
+    view = sc.BulkConfirmView(10, G1, CH, sc.parse_bulk_text("2026-11-20 | x", NOW)[0])
+    click = make_it()
+    click.response.edit_message = AsyncMock()
+    await view.do_cancel(click)
+    assert store.list_range(G1, *sc.month_range(2026, 11)) == []
+
+
+async def test_bulk_view_only_owner(store):
+    view = sc.BulkConfirmView(10, G1, CH, [])
+    assert await view.interaction_check(make_it(user_id=10)) is True
+    other = make_it(user_id=99)
+    assert await view.interaction_check(other) is False
+    assert sent(other).kwargs["ephemeral"] is True
+
+
+async def test_cmd_bulk_add_without_file_opens_modal(store):
+    it = make_it()
+    it.response.send_modal = AsyncMock()
+    await sc.cmd_bulk_add.callback(it, None)
+    assert isinstance(it.response.send_modal.await_args.args[0], sc.BulkModal)
+
+
+async def test_bulk_modal_submit(store):
+    modal = sc.BulkModal()
+    modal.body._value = "2026-11-20 14:00 | 모달 일정"
+    it = make_it()
+    await modal.on_submit(it)
+    assert "1건" in sent(it).kwargs["embed"].description
+
+
+@pytest.mark.parametrize("name,data,msg", [
+    ("a.png", b"x", ".txt"),
+    ("a.txt", b"\xff\xfe\x80\x81\xff", "인코딩"),
+    ("a.txt", b"# only\n", "없습니다"),
+])
+async def test_cmd_bulk_add_file_errors(store, name, data, msg):
+    it = make_it()
+    await sc.cmd_bulk_add.callback(it, make_attachment(data, name))
+    assert sent(it).kwargs["ephemeral"] is True and msg in sent(it).args[0]
+
+
+async def test_cmd_bulk_add_too_big(store):
+    it = make_it()
+    att = make_attachment(b"x")
+    att.size = sc.BULK_MAX_BYTES + 1
+    await sc.cmd_bulk_add.callback(it, att)
+    assert "너무 큽니다" in sent(it).args[0]
+    att.read.assert_not_awaited()
+
+
+async def test_cmd_export(store):
+    add(store, "이번달", datetime(2026, 11, 20, 14))
+    add(store, "남의 서버", datetime(2026, 11, 20, 14), guild=G2)
+    it = make_it()
+    await sc.cmd_export.callback(it, "이번달")
+    kw = sent(it).kwargs
+    f = kw["file"]
+    body = f.fp.read().decode("utf-8")
+    assert "2026-11-20 14:00 | 이번달 |  | 10" in body and "남의 서버" not in body
+    assert kw["ephemeral"] is True and f.filename == "일정.txt"
+
+
+async def test_cmd_export_all(store):
+    add(store, "먼 미래", datetime(2030, 1, 1, 9))
+    it = make_it()
+    await sc.cmd_export.callback(it, "전체")
+    assert "먼 미래" in sent(it).kwargs["file"].fp.read().decode("utf-8")
