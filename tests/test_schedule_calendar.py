@@ -1,8 +1,9 @@
 """schedule_calendar.py 테스트 (디스코드 연결 없이 mock 으로 검증)."""
 import asyncio
 import os
+import sqlite3
 import sys
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1016,7 +1017,7 @@ def test_bulk_add_dedup_and_transaction(store):
 def test_bulk_add_rollback_on_error(store, monkeypatch):
     items, _ = sc.parse_bulk_text("2026-11-21 | a\n2026-11-22 | b", NOW)
     items[1].title = None  # NOT NULL 위반 → 전체 롤백
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError):
         store.bulk_add(G1, CH, 10, items)
     assert store.list_range(G1, date(2026, 11, 1), date(2026, 12, 1)) == []
 

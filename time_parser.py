@@ -638,7 +638,7 @@ _KO_DAY = r"[월화수목금토일](?:요일|욜)?"
 _KO_ITEM = rf"{_KO_DAY}(?:(?:-|부터){_KO_DAY}(?:까지)?)?"
 _KO_SEP = r"(?:/|·|・|&|\+|이랑|랑|하고|그리고|및|와|과)?"
 _KO_LIST = rf"{_KO_ITEM}(?:{_KO_SEP}{_KO_ITEM})*"
-_KO_ITEM_RE = re.compile(rf"(?P<a>[월화수목금토일])(?:요일|욜)?(?:(?:-|부터)(?P<b>[월화수목금토일])(?:요일|욜)?(?:까지)?)?")
+_KO_ITEM_RE = re.compile(r"(?P<a>[월화수목금토일])(?:요일|욜)?(?:(?:-|부터)(?P<b>[월화수목금토일])(?:요일|욜)?(?:까지)?)?")
 
 _EN_DAY = "|".join(sorted(_EN_WEEKDAYS, key=len, reverse=True))
 _EN_ITEM = rf"(?:{_EN_DAY})(?:(?:-|to|through|thru)(?:{_EN_DAY}))?"
@@ -793,7 +793,6 @@ def parse_recurrence(text: str, base_time: Optional[datetime] = None) -> Recurre
 
     t = _Text(_normalize(_pre_recurrence(str(text))))
 
-    rule = None  # (kind, payload)
     found = []
 
     def _found(kind, payload):

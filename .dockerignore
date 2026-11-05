@@ -13,3 +13,8 @@ tests/
 REVIEW.md
 .DS_Store
 Thumbs.db
+# 로컬 DB 파일은 이미지에 넣지 않음
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*

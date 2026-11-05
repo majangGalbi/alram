@@ -32,3 +32,10 @@ polls.db
 *.db-journal
 # 출석체크 SQLite DB
 attendance.db
+# 달력 일정 DB
+calendar.db
+# SQLite WAL/공유 메모리 파일 (모든 DB)
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm

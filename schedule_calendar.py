@@ -41,7 +41,7 @@ from time_parser import TimeParseError, parse_time
 __all__ = ["register"]
 
 SEOUL = pytz.timezone("Asia/Seoul")
-DEFAULT_DB_PATH = "calendar.db"
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calendar.db")  # 실행 위치(cwd)와 무관하게 bot.py 옆에 저장
 DEFAULT_REMIND_MINUTES = 10
 MAX_REMIND_MINUTES = 7 * 24 * 60          # 최대 1주일 전
 ALL_DAY_REMIND_TIME = time(9, 0)          # 종일 일정은 당일 오전 9시 기준
@@ -1009,7 +1009,7 @@ def parse_bulk_text(text: str, now: datetime) -> Tuple[List[BulkItem], List[Tupl
     import csv
 
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    data = [(i + 1, l) for i, l in enumerate(lines) if l.strip() and not l.strip().startswith("#")]
+    data = [(i + 1, ln) for i, ln in enumerate(lines) if ln.strip() and not ln.strip().startswith("#")]
     if not data:
         raise BulkParseError("등록할 일정이 없습니다. " + BULK_FORMAT_HELP)
     header = [h.strip().lstrip("\ufeff") for h in next(csv.reader([data[0][1]]))]
@@ -1023,7 +1023,7 @@ def parse_bulk_text(text: str, now: datetime) -> Tuple[List[BulkItem], List[Tupl
         try:
             if is_csv:
                 row = next(csv.reader([line]))
-                rec = dict(zip(header, row + [""] * (len(header) - len(row))))
+                rec = dict(zip(header, row + [""] * (len(header) - len(row)), strict=False))
                 items.append(_bulk_item(line_no, rec.get("날짜", ""), rec.get("시각", ""), rec.get("제목", ""),
                                         rec.get("설명", ""), rec.get("알림", ""), now))
             else:
