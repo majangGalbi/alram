@@ -10,6 +10,9 @@
     보여줄 수 있는 한국어 메시지 포함)를 던진다.
 - ``parse_korean_time(text, base_time) -> Optional[datetime]``
     기존 bot.py 호출부와의 호환용 래퍼. 실패하면 ``None`` 을 돌려준다.
+- ``is_recurring(text) -> bool`` / ``parse_recurrence(text) -> Recurrence``
+    '매일 오전 7시', '매주 월수금 9시', '2시간마다' 같은 반복 표현 해석.
+    (``parse_time`` 은 반복 표현을 계속 거부한다.)
 
 설계 원칙
 ---------
@@ -29,7 +32,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-__all__ = ["TimeParseError", "parse_time", "parse_korean_time"]
+__all__ = [
+    "TimeParseError", "parse_time", "parse_korean_time",
+    "Recurrence", "parse_recurrence", "is_recurring", "MIN_INTERVAL_SECONDS",
+]
 
 
 class TimeParseError(ValueError):
@@ -585,3 +591,335 @@ def parse_korean_time(text: str, base_time: datetime) -> Optional[datetime]:
         return parse_time(text, base_time)
     except TimeParseError:
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. 반복 예약 파서
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# parse_time() 은 1회성 시각만 다루고 반복 표현은 계속 거부한다(기존 API 유지).
+# 반복 표현은 parse_recurrence() 가 별도의 결과 타입(Recurrence)으로 돌려준다.
+# Recurrence.trigger_kwargs() 는 APScheduler CronTrigger / IntervalTrigger 에
+# 그대로 넘길 수 있는 기본 타입(int/str)만 담은 dict 이다. 이 모듈은 APScheduler 에
+# 의존하지 않는다.
+
+MIN_INTERVAL_SECONDS = 10 * 60          # 'N분마다' 최소 간격 (알림 도배 방지)
+MAX_INTERVAL_SECONDS = 7 * 24 * 60 * 60  # 'N시간마다' 최대 간격 (그 이상은 매일/매주 사용)
+
+_WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_WEEKDAY_KO = "월화수목금토일"
+
+
+@dataclass(frozen=True)
+class Recurrence:
+    """반복 규칙.
+
+    - ``kind == "cron"``: ``cron`` 에 CronTrigger 인자 (예: ``{"day_of_week": "mon,wed,fri",
+      "hour": 7, "minute": 0, "second": 0}``)
+    - ``kind == "interval"``: ``interval_seconds`` 초 간격 (IntervalTrigger)
+    - ``description``: 사용자에게 보여줄 한국어 설명 (예: "매주 월·수·금 오전 7시")
+    """
+
+    kind: str
+    description: str
+    cron: tuple = ()             # ((key, value), ...) — frozen 이라 dict 대신 tuple
+    interval_seconds: int = 0
+
+    def trigger_kwargs(self) -> dict:
+        if self.kind == "interval":
+            return {"seconds": self.interval_seconds}
+        return dict(self.cron)
+
+
+_REC_HELP = "예: '매일 오전 7시', '평일 8시 30분', '매주 월수금 9시', '매월 1일 오전 10시', '2시간마다'"
+
+# 반복 표현에서 쓰는 요일 목록 ("월수금", "월,수,금", "월~금", "월요일부터 금요일까지")
+_KO_DAY = r"[월화수목금토일](?:요일|욜)?"
+_KO_ITEM = rf"{_KO_DAY}(?:(?:-|부터){_KO_DAY}(?:까지)?)?"
+_KO_SEP = r"(?:/|·|・|&|\+|이랑|랑|하고|그리고|및|와|과)?"
+_KO_LIST = rf"{_KO_ITEM}(?:{_KO_SEP}{_KO_ITEM})*"
+_KO_ITEM_RE = re.compile(rf"(?P<a>[월화수목금토일])(?:요일|욜)?(?:(?:-|부터)(?P<b>[월화수목금토일])(?:요일|욜)?(?:까지)?)?")
+
+_EN_DAY = "|".join(sorted(_EN_WEEKDAYS, key=len, reverse=True))
+_EN_ITEM = rf"(?:{_EN_DAY})(?:(?:-|to|through|thru)(?:{_EN_DAY}))?"
+_EN_LIST = rf"{_EN_ITEM}(?:(?:and|&|/|\+)?{_EN_ITEM})*"
+_EN_ITEM_RE = re.compile(rf"(?P<a>{_EN_DAY})(?:(?:-|to|through|thru)(?P<b>{_EN_DAY}))?")
+
+_REC_INTERVAL_KO_RE = re.compile(
+    rf"(?P<dur>(?:{_NUM}(?:주일|주|일|시간|분|초)반?)+)(?:마다|간격으로|간격|에한번씩|에한번)"
+)
+_REC_INTERVAL_EN_RE = re.compile(rf"every(?P<dur>{_EN_DUR})")
+_REC_HOURLY_RE = re.compile(
+    r"매시간(?:마다)?(?:(?P<mi>\d{1,2})분)?|매시(?:(?P<mi2>\d{1,2})분|정각)|everyhour|hourly"
+)
+_REC_DAILY_RE = re.compile(r"매일매일|매일(?:마다)?|날마다|매날|everyday|daily|eachday")
+_REC_WEEKDAYS_RE = re.compile(r"(?:매주)?(?:평일|주중)(?:마다)?|매평일|(?:every|each)?weekdays?")
+_REC_WEEKEND_RE = re.compile(r"(?:매주)?주말(?:마다)?|(?:every|each)?weekends?")
+_REC_MONTHLY_RE = re.compile(
+    r"(?:매월|매달|달마다)(?:(?P<d>\d{1,2})일|(?P<last>말일|마지막날))(?:마다)?"
+    r"|(?:everymonth|monthly)(?:on)?(?:the)?(?:(?P<d2>\d{1,2})(?:st|nd|rd|th)|(?P<last2>lastday))"
+)
+_REC_YEARLY_RE = re.compile(r"(?:매년|해마다)(?P<m>\d{1,2})월(?P<d>\d{1,2})일(?:마다)?")
+_REC_WEEKLY_RE = re.compile(
+    rf"(?:매주|주마다)(?P<ko>{_KO_LIST})(?:마다)?"
+    rf"|(?<![\d매평주휴생내요금명])(?P<ko2>{_KO_LIST})마다"
+    rf"|(?:every|each|weekly(?:on)?)(?P<en>{_EN_LIST})"
+)
+# 규칙 키워드만 있고 내용이 빠진 경우 (예: "매주 9시", "매월 9시")
+_REC_BARE_RE = re.compile(r"매주|매월|매달|매년|해마다|everymonth|monthly|everyweek|weekly|every|마다")
+
+# 1회성 '이번 주말' 같은 표현은 반복으로 보지 않는다.
+_RECURRING_HINT_RE = re.compile(
+    _RECURRING_RE.pattern + r"|(?<!이번)(?<!다음)(?<!담)(?<!지난)주말|평일|주중|weekdays?|weekends?|hourly|매시|해마다|날마다|간격|에한번"
+)
+
+
+def is_recurring(text: str) -> bool:
+    """입력이 반복 예약 표현('매일', '매주', '~마다', 'every' 등)으로 보이면 True."""
+    if text is None or not str(text).strip():
+        return False
+    return bool(_RECURRING_HINT_RE.search(_normalize(_pre_recurrence(str(text)))))
+
+
+def _pre_recurrence(text: str) -> str:
+    # '~' 는 _normalize 에서 지워지므로 요일 범위("월~금")를 위해 '-' 로 바꿔 둔다.
+    s = unicodedata.normalize("NFKC", text)
+    return re.sub(r"\s*[~〜–—]\s*", "-", s)
+
+
+def _take_clock(t: "_Text") -> Optional[_Clock]:
+    """parse_time 의 시각 추출과 같은 규칙으로 시각 하나를 꺼낸다 (없으면 None)."""
+    clocks: list = []
+    for m in t.take_all(_SPECIAL_TIME_RE):
+        w = m.group(0)
+        if w in ("자정", "한밤중", "midnight"):
+            clocks.append(_Clock(hour=0, special="midnight"))
+        else:
+            clocks.append(_Clock(hour=12, special="noon"))
+    for regex in _TIME_RES:
+        for m in t.take_all(regex):
+            clocks.append(_parse_clock(m))
+    lone_mer = t.take_all(_LONE_MERIDIEM_RE)
+
+    if len(clocks) > 1:
+        raise TimeParseError("시각이 여러 개 입력되었습니다. 하나만 입력해 주세요.")
+    clock = clocks[0] if clocks else None
+    if clock is not None:
+        if lone_mer:
+            if clock.meridiem or clock.special or len(lone_mer) > 1:
+                raise TimeParseError("시간대 표현(오전/오후 등)이 중복되었습니다.")
+            mer = lone_mer[0].group(0)
+            clock.meridiem = _MER_ALIASES.get(mer, mer)
+        _validate_clock(clock)
+    elif lone_mer:
+        raise TimeParseError(f"몇 시에 울릴지 함께 입력해 주세요. {_REC_HELP}")
+    return clock
+
+
+def _clock_to_hms(c: _Clock) -> tuple:
+    """시각 → (시, 분, 초, 날짜이동). 날짜이동 1 = 다음날 (예: '밤 1시', '자정')."""
+    ref = date(2026, 1, 5)  # 기준 날짜는 아무 날이나 무관
+    dt_ = _clock_on_date(ref, c)
+    return dt_.hour, dt_.minute, dt_.second, (dt_.date() - ref).days
+
+
+def _fmt_clock(h: int, m: int, s: int) -> str:
+    if (h, m, s) == (0, 0, 0):
+        return "자정(0시)"
+    if (h, m, s) == (12, 0, 0):
+        return "정오(낮 12시)"
+    ampm = "오전" if h < 12 else "오후"
+    h12 = h % 12 or 12
+    out = f"{ampm} {h12}시"
+    if m or s:
+        out += f" {m}분"
+    if s:
+        out += f" {s}초"
+    return out
+
+
+def _fmt_duration(seconds: int) -> str:
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h:
+        parts.append(f"{h}시간")
+    if m:
+        parts.append(f"{m}분")
+    if s:
+        parts.append(f"{s}초")
+    return " ".join(parts)
+
+
+def _expand_days(items) -> set:
+    """[(a, b), ...] (요일 번호, b 는 범위 끝 또는 None) → 요일 번호 집합."""
+    out = set()
+    for a, b in items:
+        if b is None:
+            out.add(a)
+            continue
+        i = a
+        while True:  # '금~월' 처럼 주를 넘어가는 범위도 허용
+            out.add(i)
+            if i == b:
+                break
+            i = (i + 1) % 7
+    return out
+
+
+def _days_description(days: set) -> str:
+    if days == set(range(7)):
+        return "매일"
+    if days == set(range(5)):
+        return "평일(월~금)"
+    if days == {5, 6}:
+        return "주말(토·일)"
+    if len(days) == 1:
+        return f"매주 {_WEEKDAY_KO[next(iter(days))]}요일"
+    return "매주 " + "·".join(_WEEKDAY_KO[d] for d in sorted(days))
+
+
+def parse_recurrence(text: str, base_time: Optional[datetime] = None) -> Recurrence:
+    """반복 예약 표현을 해석해 ``Recurrence`` 를 돌려준다.
+
+    지원: 매일 / 평일 / 주말 / 매주 X요일(여러 요일·범위) / 매월 N일·말일 / 매년 M월 D일 /
+    매시간 / N시간·N분마다 (최소 10분) 와 영어 표현(every day 7am, every 30 minutes …).
+    모든 시각은 한국 시간 기준이다. ``base_time`` 은 현재 사용하지 않으며 API 대칭용이다.
+
+    :raises TimeParseError: 반복 표현이 아니거나 해석할 수 없는 경우
+    """
+    if text is None or not str(text).strip():
+        raise TimeParseError(f"반복 시간을 입력해 주세요. {_REC_HELP}")
+
+    t = _Text(_normalize(_pre_recurrence(str(text))))
+
+    rule = None  # (kind, payload)
+    found = []
+
+    def _found(kind, payload):
+        found.append((kind, payload))
+
+    # '매월 15일마다' 가 '15일마다'(간격)로 잘못 잡히지 않도록 월/연 단위를 먼저 꺼낸다.
+    for m in t.take_all(_REC_MONTHLY_RE):
+        d = m.group("d") or m.group("d2")
+        _found("monthly", "last" if (m.group("last") or m.group("last2")) else int(d))
+    for m in t.take_all(_REC_YEARLY_RE):
+        _found("yearly", (int(m.group("m")), int(m.group("d"))))
+    for m in t.take_all(_REC_INTERVAL_KO_RE):
+        _found("interval_ko", m.group("dur"))
+    for m in t.take_all(_REC_INTERVAL_EN_RE):
+        _found("interval_en", m.group("dur"))
+    for m in t.take_all(_REC_HOURLY_RE):
+        mi = m.group("mi") or m.group("mi2")
+        _found("hourly", int(mi) if mi else 0)
+    for _ in t.take_all(_REC_DAILY_RE):
+        _found("days", set(range(7)))
+    for _ in t.take_all(_REC_WEEKDAYS_RE):
+        _found("days", set(range(5)))
+    for _ in t.take_all(_REC_WEEKEND_RE):
+        _found("days", {5, 6})
+    for m in t.take_all(_REC_WEEKLY_RE):
+        if m.group("en"):
+            items = [(_EN_WEEKDAYS[x["a"]], _EN_WEEKDAYS[x["b"]] if x["b"] else None)
+                     for x in _EN_ITEM_RE.finditer(m.group("en"))]
+        else:
+            body = m.group("ko") or m.group("ko2")
+            items = [(_KO_WEEKDAYS[x["a"]], _KO_WEEKDAYS[x["b"]] if x["b"] else None)
+                     for x in _KO_ITEM_RE.finditer(body)]
+        _found("days", _expand_days(items))
+
+    if len(found) > 1:
+        raise TimeParseError("반복 규칙이 여러 개 입력되었습니다. 하나만 입력해 주세요. " + _REC_HELP)
+    if not found:
+        bare = _REC_BARE_RE.search(t.s)
+        if bare and bare.group(0) in ("매주", "everyweek", "weekly"):
+            raise TimeParseError("'매주' 뒤에 요일을 함께 입력해 주세요. 예: '매주 월요일 9시', '매주 월수금 9시'")
+        if bare and bare.group(0) in ("매월", "매달", "everymonth", "monthly"):
+            raise TimeParseError("'매월' 뒤에 날짜를 함께 입력해 주세요. 예: '매월 1일 오전 9시', '매월 말일 오후 6시'")
+        if bare and bare.group(0) in ("매년", "해마다"):
+            raise TimeParseError("'매년' 뒤에 월/일을 함께 입력해 주세요. 예: '매년 12월 25일 오전 9시'")
+        raise TimeParseError(f"반복 규칙을 이해하지 못했습니다. {_REC_HELP}")
+    kind, payload = found[0]
+
+    # ── 간격 반복 (N시간/N분마다) ─────────────────────────────────────────
+    if kind in ("interval_ko", "interval_en"):
+        korean = kind == "interval_ko"
+        if re.search(r"주일|주|일" if korean else r"w|d", payload):
+            try:
+                dur = _parse_duration(payload, korean=korean)
+            except OverflowError:
+                raise TimeParseError("반복 간격이 너무 깁니다.") from None
+            if dur == timedelta(days=1):
+                kind, payload = "days", set(range(7))   # '하루마다' = 매일
+            else:
+                raise TimeParseError(
+                    "일/주 단위 간격 반복은 지원하지 않습니다. '매일 오전 9시', '매주 월요일 9시'처럼 입력해 주세요."
+                )
+        else:
+            try:
+                dur = _parse_duration(payload, korean=korean)
+            except OverflowError:
+                raise TimeParseError("반복 간격이 너무 깁니다.") from None
+            seconds = int(dur.total_seconds())
+            if seconds < MIN_INTERVAL_SECONDS:
+                raise TimeParseError(f"반복 간격은 최소 {MIN_INTERVAL_SECONDS // 60}분 이상이어야 합니다.")
+            if seconds > MAX_INTERVAL_SECONDS:
+                raise TimeParseError("반복 간격은 7일(168시간) 이하로 입력해 주세요. 더 긴 주기는 '매주 X요일'을 사용해 주세요.")
+            if _take_clock(t) is not None:
+                raise TimeParseError("'~마다' 간격 반복과 시각을 함께 쓸 수 없습니다. 둘 중 하나만 입력해 주세요.")
+            _check_leftover(t)
+            return Recurrence("interval", f"{_fmt_duration(seconds)}마다", interval_seconds=seconds)
+
+    # ── 매시간 ───────────────────────────────────────────────────────────
+    if kind == "hourly":
+        if not 0 <= payload <= 59:
+            raise TimeParseError(f"분은 0~59 사이여야 합니다. (입력: {payload}분)")
+        if _take_clock(t) is not None:
+            raise TimeParseError("'매시간'과 시각을 함께 쓸 수 없습니다. 예: '매시간', '매시 30분'")
+        _check_leftover(t)
+        desc = "매시간 정각" if payload == 0 else f"매시 {payload}분"
+        return Recurrence("cron", desc, cron=(("minute", payload), ("second", 0)))
+
+    # ── 시각이 필요한 규칙 ────────────────────────────────────────────────
+    clock = _take_clock(t)
+    _check_leftover(t)
+    if clock is None:
+        raise TimeParseError(f"몇 시에 울릴지 함께 입력해 주세요. {_REC_HELP}")
+    h, mi, sec, shift = _clock_to_hms(clock)
+    when = _fmt_clock(h, mi, sec)
+    hms = (("hour", h), ("minute", mi), ("second", sec))
+
+    if kind == "days":
+        days = {(d + shift) % 7 for d in payload}
+        prefix = _days_description(days)
+        if days == set(range(7)):
+            return Recurrence("cron", f"매일 {when}", cron=hms)
+        dow = ",".join(_WEEKDAY_KEYS[d] for d in sorted(days))
+        return Recurrence("cron", f"{prefix} {when}", cron=(("day_of_week", dow),) + hms)
+
+    if shift:
+        raise TimeParseError("자정/밤 늦은 시각은 날짜가 넘어가 모호합니다. '오전 0시', '새벽 1시'처럼 입력해 주세요.")
+
+    if kind == "monthly":
+        if payload == "last":
+            return Recurrence("cron", f"매월 말일 {when}", cron=(("day", "last"),) + hms)
+        if not 1 <= payload <= 31:
+            raise TimeParseError(f"일은 1~31 사이여야 합니다. (입력: {payload}일)")
+        note = " (해당 날짜가 없는 달은 건너뜀)" if payload > 28 else ""
+        return Recurrence("cron", f"매월 {payload}일 {when}{note}", cron=(("day", payload),) + hms)
+
+    # yearly
+    month, day = payload
+    try:
+        date(2024, month, day)  # 윤년 기준으로 존재하는 날짜인지 확인 (2월 29일 허용)
+    except ValueError:
+        raise TimeParseError("존재하지 않는 날짜입니다. 월/일을 다시 확인해 주세요.") from None
+    note = " (윤년에만)" if (month, day) == (2, 29) else ""
+    return Recurrence("cron", f"매년 {month}월 {day}일 {when}{note}",
+                      cron=(("month", month), ("day", day)) + hms)
+
+
+def _check_leftover(t: "_Text") -> None:
+    rest = re.sub(r"마다|씩", "", t.leftover()).strip()
+    if rest:
+        raise TimeParseError(f"이해할 수 없는 부분이 있습니다: '{rest}'. {_REC_HELP}")
