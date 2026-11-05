@@ -21,10 +21,12 @@ def home():
     return "Bot is running 24/7!"
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    # 호스팅 플랫폼(Heroku/Render 등)은 $PORT 로 포트를 지정하므로 이를 우선 사용
+    app.run(host='0.0.0.0', port=int(os.getenv("PORT", "8080")))
 
 def keep_alive():
-    t = Thread(target=run)
+    # daemon=True: 봇이 종료(토큰 오류 등)되면 웹서버 스레드 때문에 프로세스가 좀비로 남지 않도록 함
+    t = Thread(target=run, daemon=True)
     t.start()
 
 # [2] 디스코드 봇 설정
@@ -164,5 +166,13 @@ async def on_ready():
     print(f"✅ {bot.user.name} 봇이 로그인 성공했습니다!")
 
 # [6] 봇 실제 구동부
-keep_alive()
-bot.run(os.getenv("DISCORD_BOT_TOKEN"))
+def main():
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        raise SystemExit("❌ DISCORD_BOT_TOKEN 환경변수가 설정되지 않았습니다.")
+    keep_alive()
+    bot.run(token)
+
+
+if __name__ == "__main__":
+    main()
