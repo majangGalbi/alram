@@ -25,3 +25,8 @@ Thumbs.db
 # 예약 저장 DB (JOBS_DB_PATH 기본값)
 jobs.sqlite
 *.sqlite-journal
+Thumbs.db
+
+# 투표 데이터 (SQLite)
+polls.db
+*.db-journal

@@ -16,6 +16,7 @@ from threading import Thread
 from dotenv import load_dotenv
 from time_parser import parse_time, TimeParseError  # 💡 시간 텍스트 파싱 (time_parser.py)
 from time_parser import is_recurring, parse_recurrence  # 🔁 반복 예약 표현 파싱
+import polls  # 🗳️ 버튼 투표 (/투표, /투표마감)
 
 load_dotenv()
 
@@ -102,9 +103,11 @@ class MyBot(commands.Bot):
         await self.tree.sync()
         ensure_sqlite_dir(self.jobs_db_url)
         self.scheduler.start()  # DB에 저장된 예약을 불러옴
+        await polls.restore(self)  # 진행 중 투표 버튼/자동 마감 복원
         print(f"⏰ 스케줄러가 시작되었습니다. (저장된 예약 {len(self.scheduler.get_jobs())}건)")
 
 bot = MyBot()
+polls.register(bot)
 
 def job_scope(interaction):
     """예약을 구분하는 범위: 서버(길드) 단위, DM이면 채널 단위."""
