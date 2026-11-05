@@ -447,6 +447,10 @@ class TestLevelCommand:
         await mgr.handle_level(it, make_member(bot=True))
         assert it.response.send_message.call_args.kwargs["ephemeral"] is True
 
+    def test_render_long_name(self):
+        png = lv.render_rank_card("가" * 100, 999, 10**9, 10**6, 10**7, 123456)
+        assert png and png[:8] == b"\x89PNG\r\n\x1a\n"
+
     def test_render_without_font_returns_none(self, monkeypatch):
         monkeypatch.setattr(lv, "FONT_BOLD", "/nonexistent.ttf")
         assert lv.render_rank_card("a", 1, 1, 1, 1, 1) is None

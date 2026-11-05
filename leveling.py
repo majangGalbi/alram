@@ -284,12 +284,15 @@ def render_rank_card(name: str, level: int, xp: int, current: int, needed: int,
         f_big = ImageFont.truetype(FONT_BOLD, 30)
         f_small = ImageFont.truetype(FONT_REGULAR, 22)
 
-        if len(name) > 20:
-            name = name[:19] + "…"
-        draw.text((40, 30), name, font=f_name, fill=(255, 255, 255))
         right = f"레벨 {level}   " + (f"#{rank}" if rank else "순위 없음")
         tw = draw.textlength(right, font=f_big)
         draw.text((width - 40 - tw, 34), right, font=f_big, fill=(88, 196, 255))
+        max_name = width - 80 - tw - 30  # 오른쪽 레벨/순위 글자와 겹치지 않게 폭 기준으로 자름
+        if draw.textlength(name, font=f_name) > max_name:
+            while name and draw.textlength(name + "…", font=f_name) > max_name:
+                name = name[:-1]
+            name += "…"
+        draw.text((40, 30), name, font=f_name, fill=(255, 255, 255))
 
         x0, y0, x1, y1 = 40, 120, width - 40, 160
         draw.rounded_rectangle((x0, y0, x1, y1), radius=20, fill=(72, 75, 78))
