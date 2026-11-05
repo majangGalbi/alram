@@ -87,6 +87,8 @@ def log_missed_job(event):
     print(f"⚠️ 예약 {event.job_id} 이(가) 지연 허용 시간을 넘겨 전송되지 않았습니다 (예정: {event.scheduled_run_time}).")
 MAX_RECURRING_JOBS_PER_SCOPE = 25  # 서버(또는 DM)당 반복 예약 최대 개수 (도배 방지)
 SEOUL_TZ = "Asia/Seoul"
+# 예약 확인 메시지는 아무도 핑하지 않음 (메시지에 넣은 <@id> 로 임의 사용자 호출 방지, 실제 알림 때만 대상 핑)
+CONFIRM_MENTIONS = discord.AllowedMentions.none()
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -262,7 +264,8 @@ async def schedule_notification(
         f"🆔 **예약 번호(ID):** {job_id}\n"
         f"📅 **일시:** {formatted_time}\n"
         f"👤 **대상:** {멘션.mention}\n"
-        f"💬 **내용:** {메시지}"
+        f"💬 **내용:** {메시지}",
+        allowed_mentions=CONFIRM_MENTIONS,
     )
 
 async def schedule_recurring(interaction, 일시, 멘션, 메시지, current_time):
@@ -326,7 +329,8 @@ async def schedule_recurring(interaction, 일시, 멘션, 메시지, current_tim
         f"⏭️ **다음 알림:** {format_korean_time(next_run)}\n"
         f"👤 **대상:** {멘션.mention}\n"
         f"💬 **내용:** {메시지}\n"
-        f"(그만 받으려면 `/예약취소 {job_id}`)"
+        f"(그만 받으려면 `/예약취소 {job_id}`)",
+        allowed_mentions=CONFIRM_MENTIONS,
     )
 
 # [4] 슬래시 명령어: /예약목록

@@ -4,6 +4,7 @@ import os
 import sys
 from datetime import timedelta
 
+import pytest
 import pytz
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -104,3 +105,16 @@ async def test_close_shuts_down_background_tasks(tmp_path, monkeypatch):
 async def test_close_without_setup_hook_is_safe():
     b = bot.MyBot()
     await b.close()  # 스케줄러 미시작 상태에서도 예외 없음
+
+
+@pytest.mark.parametrize("when", ["30분 뒤", "매일 오전 9시"])
+async def test_schedule_confirmation_does_not_ping(when, tmp_path, monkeypatch):
+    r = Restarter("sqlite:///" + str(tmp_path / "jobs.sqlite"), monkeypatch)
+    try:
+        r.start()
+        it = make_interaction()
+        await bot.schedule_notification.callback(it, when, make_member(), "<@999> 확인")
+        am = it.followup.send.call_args.kwargs["allowed_mentions"]
+        assert am.users is False and am.roles is False and am.everyone is False
+    finally:
+        r.stop()
