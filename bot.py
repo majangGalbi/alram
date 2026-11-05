@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 from time_parser import parse_time, TimeParseError  # 💡 시간 텍스트 파싱 (time_parser.py)
 from time_parser import is_recurring, parse_recurrence  # 🔁 반복 예약 표현 파싱
 import polls  # 🗳️ 버튼 투표 (/투표, /투표마감)
+import attendance  # /출석 /출석현황 /랭킹
+import fun  # /주사위 /뽑기 /팀나누기
 
 load_dotenv()
 
@@ -108,6 +110,8 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 polls.register(bot)
+attendance.register(bot)
+fun.register(bot)
 
 def job_scope(interaction):
     """예약을 구분하는 범위: 서버(길드) 단위, DM이면 채널 단위."""

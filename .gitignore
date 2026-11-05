@@ -30,3 +30,5 @@ Thumbs.db
 # 투표 데이터 (SQLite)
 polls.db
 *.db-journal
+# 출석체크 SQLite DB
+attendance.db
