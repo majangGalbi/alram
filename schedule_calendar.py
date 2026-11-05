@@ -883,8 +883,46 @@ BULK_MAX_BYTES = 512 * 1024
 BULK_MODAL_MAX = 4000
 BULK_FORMAT_HELP = "형식: `날짜 [시각] | 제목 | 설명(선택) | 알림N분전(선택)` 예) `2026-11-20 14:00 | 팀 회의 | 3층 | 30`"
 
-_BULK_DATE_RE = re.compile(r"^(?:(?P<y>\d{4})[-/.])?(?P<m>\d{1,2})[-/.](?P<d>\d{1,2})\.?$")
-_BULK_TIME_RE = re.compile(r"^(?P<h>\d{1,2}):(?P<mi>\d{2})$")
+_BULK_DATE_RE = re.compile(
+    r"^(?:(?:(?P<y>\d{4})[-/.])?(?P<m>\d{1,2})[-/.](?P<d>\d{1,2})\.?"
+    r"|(?:(?P<ky>\d{4})\s*년\s*)?(?P<km>\d{1,2})\s*월\s*(?P<kd>\d{1,2})\s*일)$"
+)
+_BULK_KO_DATE_PREFIX_RE = re.compile(r"^((?:\d{4}\s*년\s*)?\d{1,2}\s*월\s*\d{1,2}\s*일)\s*(.*)$")
+_BULK_TIME_RE = re.compile(
+    r"^(?:(?P<ap>오전|오후)\s*)?(?:(?P<h>\d{1,2}):(?P<mi>\d{2})"
+    r"|(?P<kh>\d{1,2})\s*시(?:\s*(?P<kmi>\d{1,2})\s*분|\s*(?P<half>반))?)$"
+)
+
+
+def _split_when(when: str) -> Tuple[str, str]:
+    """첫 칸 → (날짜, 시각). '11월 20일 오후 2시', '2026-11-20 14:00' 등."""
+    when = when.strip()
+    m = _BULK_KO_DATE_PREFIX_RE.match(when)
+    if m:
+        return m.group(1), m.group(2).strip()
+    head, _, rest = when.partition(" ")
+    return head, rest.strip()
+
+
+def _bulk_time(time_s: str) -> time:
+    s = time_s.strip()
+    tm = _BULK_TIME_RE.match(s)
+    err = ValueError(f"시각 형식 오류 '{truncate(s, 20)}' (예: 14:00, 오후 2시, 오전 9시 30분)")
+    if not tm:
+        raise err
+    if tm.group("h") is not None:
+        h, mi = int(tm.group("h")), int(tm.group("mi"))
+    else:
+        h = int(tm.group("kh"))
+        mi = 30 if tm.group("half") else int(tm.group("kmi") or 0)
+    ap = tm.group("ap")
+    if ap:
+        if not 1 <= h <= 12:
+            raise err
+        h = h % 12 + (12 if ap == "오후" else 0)
+    if not (0 <= h <= 23 and 0 <= mi <= 59):
+        raise err
+    return time(h, mi)
 _BULK_REMIND_RE = re.compile(r"^(?:알림)?\s*(?P<n>-?\d+)\s*(?:분)?\s*(?:전)?$")
 
 
@@ -915,21 +953,19 @@ def decode_bulk_bytes(data: bytes) -> str:
 def _bulk_datetime(date_s: str, time_s: str, now: datetime) -> Tuple[datetime, bool]:
     m = _BULK_DATE_RE.match(date_s.strip())
     if not m:
-        raise ValueError(f"날짜 형식 오류 '{truncate(date_s.strip(), 20)}' (예: 2026-11-20, 11/27)")
-    month, day = int(m.group("m")), int(m.group("d"))
-    t = None
-    if time_s.strip():
-        tm = _BULK_TIME_RE.match(time_s.strip())
-        if not tm or not (0 <= int(tm.group("h")) <= 23 and 0 <= int(tm.group("mi")) <= 59):
-            raise ValueError(f"시각 형식 오류 '{truncate(time_s.strip(), 20)}' (예: 14:00)")
-        t = time(int(tm.group("h")), int(tm.group("mi")))
+        raise ValueError(f"날짜 형식 오류 '{truncate(date_s.strip(), 20)}' (예: 2026-11-20, 11/27, 11월 27일)")
+    if m.group("km") is not None:
+        year_s, month, day = m.group("ky"), int(m.group("km")), int(m.group("kd"))
+    else:
+        year_s, month, day = m.group("y"), int(m.group("m")), int(m.group("d"))
+    t = _bulk_time(time_s) if time_s.strip() else None
 
     def build(year):
         return datetime.combine(date(year, month, day), t or time.min)
 
     try:
-        if m.group("y"):
-            dt = build(int(m.group("y")))
+        if year_s:
+            dt = build(int(year_s))
         else:  # 연도 생략: 가장 가까운 미래 (종일이면 오늘도 포함)
             dt = None
             for year in range(now.year, now.year + 9):
@@ -997,11 +1033,8 @@ def parse_bulk_text(text: str, now: datetime) -> Tuple[List[BulkItem], List[Tupl
                 if len(parts) > 4:
                     raise ValueError("칸이 너무 많습니다 (최대 4칸)")
                 parts += [""] * (4 - len(parts))
-                when = parts[0].split()
-                if not 1 <= len(when) <= 2:
-                    raise ValueError("첫 칸은 '날짜' 또는 '날짜 시각' 이어야 합니다")
-                items.append(_bulk_item(line_no, when[0], when[1] if len(when) == 2 else "",
-                                        parts[1], parts[2], parts[3], now))
+                date_s, time_s = _split_when(parts[0])
+                items.append(_bulk_item(line_no, date_s, time_s, parts[1], parts[2], parts[3], now))
         except ValueError as e:
             errors.append((line_no, str(e) or "형식 오류"))
     return items, errors

@@ -932,14 +932,20 @@ def test_bulk_year_inference(line, expected):
     ("2026-13-01 | x", "존재하지 않는 날짜"),
     ("2027-02-29 | x", "존재하지 않는 날짜"),
     ("2026-11-20 25:00 | x", "시각 형식"),
-    ("2026-11-20 3시 | x", "시각 형식"),
+    ("2026-11-20 3시간 | x", "시각 형식"),
     ("내일 | x", "날짜 형식"),
     ("2026-11-20", "'|'"),
     ("2026-11-20 |   ", "제목이 비어"),
     ("2026-11-20 | x | y | 알림많이", "알림 값"),
     ("2026-11-20 | x | y | 99999", "알림 값"),
     ("2026-11-20 | a | b | 1 | 초과", "칸이 너무"),
-    ("2026-11-20 10:00 extra | x", "첫 칸"),
+    ("2026-11-20 10:00 extra | x", "시각 형식"),
+    ("11월 32일 | x", "존재하지 않는 날짜 '11월 32일'"),
+    ("2026년 2월 30일 | x", "존재하지 않는 날짜"),
+    ("11월 20일 오후 13시 | x", "시각 형식"),
+    ("11월 20일 오전 0시 | x", "시각 형식"),
+    ("11월 20일 오후 | x", "시각 형식"),
+    ("11월 | x", "날짜 형식 오류 '11월'"),
 ])
 def test_bulk_error_lines(line, reason):
     items, errors = sc.parse_bulk_text("2026-11-30 | 정상\n" + line, NOW)
@@ -1146,3 +1152,32 @@ async def test_cmd_export_all(store):
     it = make_it()
     await sc.cmd_export.callback(it, "전체")
     assert "먼 미래" in sent(it).kwargs["file"].fp.read().decode("utf-8")
+
+
+@pytest.mark.parametrize("line,expected,all_day", [
+    ("11월 20일 14:00 | 회의", datetime(2026, 11, 20, 14), False),
+    ("2026년 12월 3일 | 행사", datetime(2026, 12, 3), True),
+    ("11월 20일 오후 2시 | 회의", datetime(2026, 11, 20, 14), False),
+    ("11월 20일 오전 9시 30분 | 회의", datetime(2026, 11, 20, 9, 30), False),
+    ("11월 20일 오후 2시 반 | 회의", datetime(2026, 11, 20, 14, 30), False),
+    ("11월 20일 오후 12시 | 점심", datetime(2026, 11, 20, 12), False),
+    ("11월 20일 오전 12시 | 자정", datetime(2026, 11, 20, 0), False),
+    ("11월 20일 오후 2:15 | 회의", datetime(2026, 11, 20, 14, 15), False),
+    ("11월20일 15시 | 붙여쓰기", datetime(2026, 11, 20, 15), False),
+    ("11월 20일 3시 | 오전오후 없으면 24시간제", datetime(2026, 11, 20, 3), False),
+    ("2027년1월3일 | 붙여쓰기", datetime(2027, 1, 3), True),
+    ("1월 3일 | 연도 생략", datetime(2027, 1, 3), True),
+    ("11월 5일 오후 2시 | 이미 지남", datetime(2027, 11, 5, 14), False),
+    ("2026-11-20 오후 2시 | 숫자날짜+한국어시각", datetime(2026, 11, 20, 14), False),
+])
+def test_bulk_korean_dates(line, expected, all_day):
+    items, errors = sc.parse_bulk_text(line, NOW)
+    assert errors == [], errors
+    assert items[0].start == expected and items[0].all_day is all_day
+
+
+def test_bulk_korean_dates_csv():
+    text = "날짜,시각,제목\n11월 20일,오후 2시,회의\n2026년 12월 3일,,행사\n11월 31일,,없는날\n"
+    items, errors = sc.parse_bulk_text(text, NOW)
+    assert [(i.start, i.all_day) for i in items] == [(datetime(2026, 11, 20, 14), False), (datetime(2026, 12, 3), True)]
+    assert errors == [(4, "존재하지 않는 날짜 '11월 31일'")]
