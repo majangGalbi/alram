@@ -82,11 +82,39 @@
 | `11월 6일 토요일 9시`, `내일 월요일 3시` | 날짜와 요일이 맞지 않음 |
 | `730`, `3 30`, `3:3` | 형식이 모호함 |
 
+## 예약 저장 (재시작 후에도 유지)
+
+예약은 SQLite 파일에 저장되어 봇을 재시작·재배포해도 유지됩니다
+(APScheduler `SQLAlchemyJobStore`, 시작 시 `⏰ 스케줄러가 시작되었습니다. (저장된 예약 N건)` 로그).
+
+| 환경변수 | 설명 | 기본값 |
+| --- | --- | --- |
+| `JOBS_DB_PATH` | SQLite 파일 경로 (상위 폴더가 없으면 자동 생성) | `bot.py` 옆의 `jobs.sqlite` |
+| `JOBS_DB_URL` | SQLAlchemy DB URL. 설정하면 `JOBS_DB_PATH`보다 우선 | (없음) |
+
+- **봇이 꺼져 있는 동안 지나간 예약**: 예정 시각에서 5분(`MISFIRE_GRACE_SECONDS`) 이내에 다시 켜지면
+  시작 직후 **한 번** 전송합니다. 5분이 넘었으면 전송하지 않고 삭제하며 로그
+  (`⚠️ 예약 … 지연 허용 시간을 넘겨 전송되지 않았습니다`)를 남깁니다.
+- **호스팅 주의**: Heroku처럼 재시작·재배포 때 로컬 파일이 초기화되는 환경에서는 SQLite 파일도 사라집니다.
+  영구 디스크가 있으면 `JOBS_DB_PATH`를 그 경로로 지정하고, 없으면 `JOBS_DB_URL`로 외부 DB를 지정하세요.
+  (PostgreSQL 등은 해당 드라이버를 따로 설치해야 하며, SQLAlchemy 1.4 이상은 `postgres://`가 아닌
+  `postgresql://` 형식만 받습니다. 외부 DB 연동은 테스트하지 않았습니다.)
+- 예약 작업은 DB에 `"bot:send_ping"` 함수 참조와 기본 타입 인자로 저장됩니다.
+  `send_ping`의 이름·위치·인자 이름을 바꾸면 이미 저장된 예약을 복원하지 못하니 주의하세요.
+
+## 슬래시 명령 응답
+
+- `/예약`: 입력이 잘못되면(시간 해석 실패·과거 시각·메시지 길이 초과) **본인에게만** 오류가 보이고,
+  예약에 성공하면 채널의 모두에게 확인 메시지가 보입니다.
+- `/예약목록`: 예약이 없으면 본인에게만 안내, 있으면 현재 서버의 예약을 공개로 표시합니다.
+- `/예약취소`: 성공은 공개, 번호를 찾지 못하면 본인에게만 안내합니다.
+
 ## 개발
 
 ```bash
-pip install pytest pytz
-python -m pytest tests/test_time_parser.py
+pip install -r requirements-dev.txt
+python -m pytest                          # 전체 (디스코드 연결 없이 mock / 임시 SQLite)
+python -m pytest tests/test_time_parser.py # 파서만
 ```
 
 파서 API:

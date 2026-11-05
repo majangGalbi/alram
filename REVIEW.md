@@ -29,7 +29,10 @@
 - P2 해결: `10분 뒤` → 16:10
 - P3 해결(크래시 없음): `2026-11-06 09:00 KST` → `TimeParseError`로 안내 메시지 반환
 - P4 해결: `오후 3시` → 다음 날 15:00. `5월 23일`(시각 없음)은 안내와 함께 거부
-- P5 미해결: 파서와 무관한 Discord 응답 방식 문제로 그대로 남아 있음
+- P5 해결(`claude/persist-jobs`): `/예약`이 입력 검증(시간 해석·과거 시각·메시지 길이)을 `defer` **전에** 수행하고,
+  오류는 첫 응답 `response.send_message(..., ephemeral=True)`로 보냄. 검증을 통과한 경우에만 공개 `defer` 후 공개 followup.
+  `/예약목록`·`/예약취소`·오류 핸들러는 `defer`를 쓰지 않아 해당 문제 없음(테스트로 확인).
+  남은 한계: 검증 통과 후 DB 저장 단계에서 예상치 못한 예외가 나면 오류 핸들러 메시지는 공개 defer 뒤라 공개로 표시될 수 있음 (P5와 같은 Discord 동작 기준, 실서버 미검증)
 
 아래 표는 리뷰 당시 main 기준 기록입니다.
 
@@ -43,10 +46,26 @@
 | P4 | 중간 | bot.py:71-75, 93 | `오후 3시`(현재 16시) → 오늘 15:00, `5월 23일` → 2026-05-23 00:00 처럼 연/일 생략 시 과거로 해석되어 "이전 시간" 오류. `PREFER_DATES_FROM: 'future'` 미설정 |
 | P5 | 낮음 | bot.py:64, 79-95 | `defer(ephemeral=False)` 후 첫 followup은 지연 응답을 대체하므로 `ephemeral=True` 오류 메시지가 공개로 표시됨 (Discord API 동작, 실서버 미검증) |
 
+## 예약 영구 저장 (`claude/persist-jobs`에서 해결)
+- 이전: 예약이 메모리(MemoryJobStore)에만 저장되어 재시작/재배포 시 모두 사라짐.
+- 변경: `SQLAlchemyJobStore` + SQLite(기본 `jobs.sqlite`, `JOBS_DB_PATH`/`JOBS_DB_URL`로 변경). README "예약 저장" 참고.
+  - 작업은 문자열 참조 `"bot:send_ping"` + 기본 타입 kwargs(`channel_id`, `user_id`, `scope`: int / `message`, `target_name`: str)로 저장.
+  - `python bot.py`로 실행하면 모듈명이 `__main__`이라 `bot:send_ping`을 복원할 때 모듈이 한 번 더 import되어
+    로그인하지 않은 별도 `bot` 객체를 쓰게 됨 → 모듈 시작부에서 `sys.modules["bot"]`에 자기 자신을 등록해 해결
+    (이 줄을 빼면 관련 테스트 2개가 실패하는 것을 확인).
+  - 재시작 중 놓친 예약: 지연 5분 이내면 시작 직후 1회 전송, 초과면 건너뛰고 `EVENT_JOB_MISSED` 리스너가 로그를 남김.
+    `misfire_grace_time`/`coalesce`는 예약 생성 시 작업별로 DB에 함께 저장됨.
+  - `APScheduler>=3.10` 으로 하한 상향: SQLAlchemy 2.1.8과 함께 실측 시 3.6.3·3.9.1은 `SQLAlchemyJobStore` 생성 중
+    `TypeError`(`_warn_on_bytestring`)로 실패, 3.10.0·3.11.3은 정상.
+  - Heroku 등 임시 파일시스템 호스팅에서는 SQLite 파일도 재배포 시 사라지므로 영구 디스크나 외부 DB 필요(외부 DB는 미검증).
+
 ## 그 밖에 수정하지 않은 사항
-- 예약이 메모리(MemoryJobStore)에만 저장되어 재시작/재배포 시 모두 사라짐 (설계 변경 필요: SQLAlchemyJobStore 등).
 - `setup_hook`에서 매 시작마다 전역 `tree.sync()` 호출 (레이트리밋 가능성, 낮음).
 - Flask 개발 서버를 운영에 사용 (keep-alive 용도라 영향 작음).
 
 ## 테스트
-`pip install -r requirements-dev.txt && pytest` — `tests/test_bot.py` (디스코드 연결 없이 mock).
+`pip install -r requirements-dev.txt && python -m pytest` — 디스코드 연결 없이 mock.
+- `tests/test_bot.py`: 명령/알림 동작, P5 응답 흐름(오류는 ephemeral 첫 응답, 성공은 공개 defer→followup)
+- `tests/test_persistence.py`: 임시 SQLite 파일로 재시작 시나리오(예약 유지·목록·취소 반영, 5분 이내 지연 1회 전송,
+  5분 초과 건너뜀, `python bot.py` 방식 프로세스가 저장한 예약을 다른 프로세스가 복원)
+- `tests/test_time_parser.py`: 시간 파서
