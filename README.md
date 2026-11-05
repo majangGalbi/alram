@@ -85,8 +85,8 @@
 ## 개발
 
 ```bash
-pip install -r requirements-dev.txt
-python -m pytest
+pip install pytest pytz
+python -m pytest tests/test_time_parser.py
 ```
 
 파서 API:
