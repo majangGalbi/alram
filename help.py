@@ -344,7 +344,9 @@ def render_help_html(bot) -> str:
     out.append("<table><tr><th>필요 권한</th><th>비트값</th></tr>")
     for name, bit in REQUIRED_PERMISSIONS:
         out.append(f"<tr><td>{_e(name)}</td><td><code>{bit}</code></td></tr>")
-    out.append("</table><h3>인텐트</h3><table><tr><th>인텐트</th><th>설명</th></tr>")
+    out.append("</table><p class=\"muted\">슬래시 명령의 직접 응답은 인터랙션 응답으로 가지만, 예약 알림·일정 알림처럼 "
+               "봇이 채널에 직접 보내는 메시지에는 위 채널 권한이 필요합니다.</p>")
+    out.append("<h3>인텐트</h3><table><tr><th>인텐트</th><th>설명</th></tr>")
     for name, note in REQUIRED_INTENTS:
         out.append(f"<tr><td>{_e(name)}</td><td>{_e(note)}</td></tr>")
     out.append("</table></section></main></body></html>")
