@@ -1,5 +1,5 @@
 discord.py
-APScheduler
+APScheduler>=3.6,<4
 pytz
 Flask
 python-dotenv

@@ -22,7 +22,16 @@
 | 13 | 낮음 | requirements.txt | APScheduler 버전 미고정(4.x는 `AsyncIOScheduler` API가 다름) | `APScheduler>=3.6,<4` |
 | 14 | 낮음 | bot.py:154 | 취소 번호 앞뒤 공백/대문자 입력 시 찾지 못함 | `strip().lower()` |
 
-## 수정하지 않은 문제 — 시간 파싱 영역 (claude/time-parsing-overhaul 에서 재작성 중)
+## 시간 파싱 영역 문제 (리뷰 당시 미수정 → 통합 브랜치에서 상태 확인)
+
+통합 브랜치(`claude/integrated`)에서 새 `time_parser.parse_time`으로 재확인한 결과 (기준 2026-11-05 16:00 KST):
+- P1 해결: `내일 오후 3시` → 11-06 15:00, `오늘 오후 8시` → 11-05 20:00, `내일 오전 11시 30분` → 11-06 11:30
+- P2 해결: `10분 뒤` → 16:10
+- P3 해결(크래시 없음): `2026-11-06 09:00 KST` → `TimeParseError`로 안내 메시지 반환
+- P4 해결: `오후 3시` → 다음 날 15:00. `5월 23일`(시각 없음)은 안내와 함께 거부
+- P5 미해결: 파서와 무관한 Discord 응답 방식 문제로 그대로 남아 있음
+
+아래 표는 리뷰 당시 main 기준 기록입니다.
 
 기준 시각 2026-11-05 16:00(KST)으로 `dateparser.parse(..., languages=['ko'], settings={'RELATIVE_BASE': ...})` 실제 실행 결과입니다.
 
