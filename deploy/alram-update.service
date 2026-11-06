@@ -1,0 +1,8 @@
+[Unit]
+Description=alram auto update (git pull + restart)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=BRANCH=__BRANCH__
+ExecStart=__DIR__/deploy/auto_update.sh

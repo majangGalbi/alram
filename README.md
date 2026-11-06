@@ -456,6 +456,23 @@ docker run -d --name alram --env-file .env -p 8080:8080 alram
 유지하려면 볼륨을 연결하세요: `docker run ... -v alram-data:/app/data alram`
 `PORT`를 바꾸면 `-p` 의 컨테이너 쪽 포트도 맞춰 주세요(예: `-e PORT=3000 -p 3000:3000`).
 
+### 리눅스 서버(OCI 등)에서 systemd + 자동 업데이트
+
+GitHub 브랜치에 새 커밋이 올라오면 1분 안에 자동으로 받아서 봇을 재시작합니다.
+재시작 후 봇이 실행되지 않으면 이전 버전으로 자동으로 되돌리고, 그 커밋은 다음 커밋이 올라올 때까지 건너뜁니다.
+
+```bash
+cd ~/alram                       # 저장소 폴더 (.env 에 DISCORD_BOT_TOKEN)
+sudo deploy/install.sh main      # 따라갈 브랜치 (기본 main)
+```
+
+- 봇 로그: `journalctl -u alram -f`, 업데이트 로그: `journalctl -u alram-update -f`
+- 지금 바로 확인: `sudo systemctl start alram-update`
+- 자동 업데이트 끄기: `sudo systemctl disable --now alram-update.timer`
+- 서버에서 파일을 직접 고치면 업데이트가 중단됩니다(`git status` 로 확인).
+- `alram.service` 는 `MemoryMax=500M` 으로 1GB 서버에서 봇이 메모리를 과하게 쓰면 봇만 재시작되게 합니다.
+- 설치 전에 기존에 `screen`/`nohup` 등으로 켜 둔 봇은 꺼야 합니다(두 개가 동시에 응답함).
+
 ### Procfile 기반 호스팅 (Heroku 등)
 
 [`Procfile`](Procfile)의 `web: python bot.py`가 그대로 쓰입니다. 플랫폼 설정에서 `DISCORD_BOT_TOKEN`을 지정하세요.

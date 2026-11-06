@@ -1,0 +1,17 @@
+[Unit]
+Description=alram Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+# 1GB 서버(OCI E2.1.Micro) 보호: 봇이 메모리를 과하게 쓰면 서버 전체 대신 봇만 재시작
+MemoryMax=500M
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
