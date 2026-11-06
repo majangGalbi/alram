@@ -8,6 +8,17 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="${1:-main}"
 USER_NAME="$(stat -c %U "$DIR")"
 
+# Ubuntu 기본 설치에는 venv 모듈(ensurepip)이 없으므로 필요하면 python3-venv 설치
+if ! python3 -c "import ensurepip" 2>/dev/null; then
+  PYV="$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+  echo "python${PYV}-venv 설치"
+  apt-get update -qq && apt-get install -y -qq "python${PYV}-venv"
+fi
+# 이전에 실패해서 pip 없이 반쯤 만들어진 가상환경은 다시 만듦
+if [ -d "$DIR/.venv" ] && ! "$DIR/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
+  echo "불완전한 가상환경 삭제: $DIR/.venv"
+  rm -rf "$DIR/.venv"
+fi
 if [ ! -x "$DIR/.venv/bin/python" ]; then
   echo "가상환경 생성: $DIR/.venv"
   runuser -u "$USER_NAME" -- python3 -m venv "$DIR/.venv"
