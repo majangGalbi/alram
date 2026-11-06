@@ -6,3 +6,4 @@ Flask
 python-dotenv
 dateparser
 Pillow
+aiohttp

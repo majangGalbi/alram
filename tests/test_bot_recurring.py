@@ -18,9 +18,10 @@ import bot  # noqa: E402
 SEOUL = pytz.timezone("Asia/Seoul")
 
 
-def make_interaction(guild_id=111, channel_id=222):
+def make_interaction(guild_id=111, channel_id=222, user_id=444):
     it = MagicMock()
     it.guild_id = guild_id
+    it.user.id = user_id
     it.channel_id = channel_id
     it.response.defer = AsyncMock()
     it.response.send_message = AsyncMock()
@@ -125,7 +126,7 @@ async def test_recurring_job_kwargs_are_scoped_and_primitive(scheduler):
     job = scheduler.get_jobs()[0]
     assert job.kwargs == {
         "channel_id": 222, "user_id": 333, "message": "기상!", "scope": 111,
-        "target_name": "길동", "recurrence": "매일 오전 7시",
+        "target_name": "길동", "recurrence": "매일 오전 7시", "owner_id": 444,
     }
     assert all(type(v) in (int, str) for v in job.kwargs.values())
     assert job.func is bot.send_ping
@@ -271,10 +272,10 @@ def test_time_option_description_within_discord_limit():
 async def test_recurring_job_id_avoids_existing(scheduler, monkeypatch):
     await schedule("매일 9시")
     first = scheduler.get_jobs()[0].id
-    ids = iter([first + "0" * 28, "beef" + "0" * 28])
+    ids = iter([first + "0" * 24, "beef0000" + "0" * 24])
     monkeypatch.setattr(bot.uuid, "uuid4", lambda: SimpleNamespace(hex=next(ids)))
     await schedule("매일 10시")
-    assert {j.id for j in scheduler.get_jobs()} == {first, "beef"}
+    assert {j.id for j in scheduler.get_jobs()} == {first, "beef0000"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

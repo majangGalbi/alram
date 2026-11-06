@@ -41,3 +41,8 @@ calendar.db
 *.sqlite-shm
 # 채팅 레벨 SQLite DB (LEVELING_DB_PATH 기본값)
 leveling.db
+
+# v1.0(master) 예약 파일과 이전 후 보관본
+scheduler.db
+job_owners.json
+*.migrated-*

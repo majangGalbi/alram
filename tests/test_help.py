@@ -80,7 +80,7 @@ def test_params_read_from_tree():
 def test_unmapped_command_goes_to_other():
     b = make_bot()
 
-    @app_commands.command(name="레벨", description="레벨을 보여줍니다.")
+    @app_commands.command(name="미분류명령", description="레벨을 보여줍니다.")
     @app_commands.describe(사용자="조회할 사용자")
     async def level(interaction: discord.Interaction, 사용자: str = None):
         pass
@@ -92,25 +92,25 @@ def test_unmapped_command_goes_to_other():
     b.tree.add_command(level)
     b.tree.add_command(yeyak)
     infos = {i.name: i for i in helpmod.collect_commands(b)}
-    assert infos["레벨"].category == helpmod.OTHER_CATEGORY
-    assert infos["레벨"].params[0].name == "사용자" and not infos["레벨"].params[0].required
+    assert infos["미분류명령"].category == helpmod.OTHER_CATEGORY
+    assert infos["미분류명령"].params[0].name == "사용자" and not infos["미분류명령"].params[0].required
     assert infos["예약"].category == "예약 알림"
     grouped = helpmod.group_by_category(list(infos.values()))
     assert list(grouped)[-1] == helpmod.OTHER_CATEGORY
-    assert "/레벨" in helpmod.render_help_html(b)
+    assert "/미분류명령" in helpmod.render_help_html(b)
 
 
 def test_group_subcommands_expanded():
     b = make_bot()
-    grp = app_commands.Group(name="레벨", description="레벨 관련")
+    grp = app_commands.Group(name="미분류명령", description="미분류 관련")
 
-    @grp.command(name="보기", description="레벨 보기")
+    @grp.command(name="보기", description="미분류명령 보기")
     async def view(interaction: discord.Interaction):
         pass
 
     b.tree.add_command(grp)
     infos = helpmod.collect_commands(b)
-    assert [i.name for i in infos] == ["레벨 보기"]
+    assert [i.name for i in infos] == ["미분류명령 보기"]
     assert infos[0].category == helpmod.OTHER_CATEGORY
 
 

@@ -14,9 +14,10 @@ import bot  # noqa: E402  (__main__ 가드 덕분에 import 시 봇/웹서버가
 SEOUL = pytz.timezone("Asia/Seoul")
 
 
-def make_interaction(guild_id=111, channel_id=222):
+def make_interaction(guild_id=111, channel_id=222, user_id=444):
     it = MagicMock()
     it.guild_id = guild_id
+    it.user.id = user_id
     it.channel_id = channel_id
     it.response.defer = AsyncMock()
     it.response.send_message = AsyncMock()
@@ -72,10 +73,10 @@ def test_format_korean_time():
 
 
 async def test_generate_job_id_avoids_existing(scheduler, monkeypatch):
-    scheduler.add_job(lambda: None, "date", run_date=datetime.now(SEOUL) + timedelta(days=1), id="aaaa")
-    ids = iter(["aaaa" + "0" * 28, "bbbb" + "0" * 28])
+    scheduler.add_job(lambda: None, "date", run_date=datetime.now(SEOUL) + timedelta(days=1), id="aaaa0000")
+    ids = iter(["aaaa0000" + "0" * 24, "bbbb0000" + "0" * 24])
     monkeypatch.setattr(bot.uuid, "uuid4", lambda: SimpleNamespace(hex=next(ids)))
-    assert bot.generate_job_id(scheduler) == "bbbb"
+    assert bot.generate_job_id(scheduler) == "bbbb0000"
 
 
 async def test_schedule_creates_scoped_job(scheduler):

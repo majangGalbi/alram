@@ -137,7 +137,7 @@ async def test_scheduled_job_survives_restart(restarter):
     assert job.func is bot.send_ping and job.func_ref == "bot:send_ping"
     assert job.next_run_time == run_time
     assert job.kwargs == {"channel_id": 222, "user_id": 333, "message": "회의",
-                          "scope": 111, "target_name": "홍길동"}
+                          "scope": 111, "target_name": "홍길동", "owner_id": 444}
     assert job.misfire_grace_time == bot.MISFIRE_GRACE_SECONDS and job.coalesce is True
 
 
@@ -169,12 +169,12 @@ async def test_list_and_cancel_after_restart(restarter):
 
 async def test_generate_job_id_checks_persisted_ids(restarter, monkeypatch):
     s = restarter.start()
-    store_job(s, "aaaa", datetime.now(SEOUL) + timedelta(days=1))
+    store_job(s, "aaaa0000", datetime.now(SEOUL) + timedelta(days=1))
     s = restarter.start()
     from types import SimpleNamespace
-    ids = iter(["aaaa" + "0" * 28, "cccc" + "0" * 28])
+    ids = iter(["aaaa0000" + "0" * 24, "cccc0000" + "0" * 24])
     monkeypatch.setattr(bot.uuid, "uuid4", lambda: SimpleNamespace(hex=next(ids)))
-    assert bot.generate_job_id(s) == "cccc"
+    assert bot.generate_job_id(s) == "cccc0000"
 
 
 async def test_missed_within_grace_is_sent_once_after_restart(restarter, monkeypatch):

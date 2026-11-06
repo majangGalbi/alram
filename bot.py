@@ -8,6 +8,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime
 import os
+from typing import Optional
 import sys
 import pytz
 import uuid
@@ -21,6 +22,8 @@ import attendance  # /출석 /출석현황 /랭킹
 import fun  # /주사위 /뽑기 /팀나누기
 import schedule_calendar  # 📅 서버 달력 일정표 (schedule_calendar.py)
 import leveling  # 💬 채팅 레벨·경험치 (/레벨 /레벨랭킹 /레벨설정 /레벨보상)
+import meal  # 🍽️ /급식 (나이스 API)
+import legacy_migration  # 📦 v1.0(master) scheduler.db 예약 이전
 import help as help_cmd  # 📖 /도움말 + 웹 /help 페이지 (help.py)
 
 load_dotenv()
@@ -48,7 +51,8 @@ def keep_alive():
 # [2] 디스코드 봇 설정
 MISFIRE_GRACE_SECONDS = 300      # 알림이 지연되어도 5분 이내면 전송
 MAX_MESSAGE_LENGTH = 1500        # 디스코드 메시지 2000자 제한(멘션 포함) 안쪽으로 유지
-JOB_ID_LENGTH = 4
+JOB_ID_LENGTH = 8                # v1.0 과 같은 8자리 예약 번호
+BOT_VERSION = "v2.0"
 EMBED_MAX_FIELDS = 25            # 디스코드 임베드 필드 최대 개수
 EMBED_FIELD_VALUE_LIMIT = 1024   # 디스코드 임베드 필드 값 최대 길이
 SEND_PING_REF = "bot:send_ping"  # DB에 저장되는 알림 함수 참조 (함수 이름/위치를 바꾸면 기존 예약 복원 실패)
@@ -110,6 +114,8 @@ class MyBot(commands.Bot):
         await self.tree.sync()
         ensure_sqlite_dir(self.jobs_db_url)
         self.scheduler.start()  # DB에 저장된 예약을 불러옴
+        await legacy_migration.migrate_legacy_jobs(  # v1.0 의 scheduler.db 예약을 한 번 옮김
+            self.scheduler, SEND_PING_REF, resolve_scope_for_channel, MISFIRE_GRACE_SECONDS)
         await polls.restore(self)  # 진행 중 투표 버튼/자동 마감 복원
         print(f"⏰ 스케줄러가 시작되었습니다. (저장된 예약 {len(self.scheduler.get_jobs())}건)")
 
@@ -133,8 +139,45 @@ attendance.register(bot)
 fun.register(bot)
 schedule_calendar.register(bot)
 leveling.register(bot)
+meal.register(bot)
 help_cmd.register(bot)
 help_cmd.register_web(app, bot)
+
+async def resolve_scope_for_channel(channel_id):
+    """채널 ID → 예약 범위(서버 ID, DM 이면 채널 ID). 이전 버전 예약을 옮길 때 사용."""
+    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+    guild = getattr(channel, "guild", None)
+    return guild.id if guild is not None else channel_id
+
+
+def can_manage_job(job, interaction):
+    """예약을 보고 취소할 수 있는지: 같은 서버(범위) + 본인이 만든 예약.
+    주인 정보가 없는 예약(이전 버전에서 주인 기록이 없던 것)은 같은 서버 사람 누구나 관리 가능."""
+    if job.kwargs.get("scope") != job_scope(interaction):
+        return False
+    owner_id = job.kwargs.get("owner_id")
+    return owner_id is None or owner_id == interaction.user.id
+
+
+def my_jobs(interaction):
+    jobs = [job for job in bot.scheduler.get_jobs() if can_manage_job(job, interaction)]
+    return sorted(jobs, key=lambda j: j.next_run_time.timestamp() if j.next_run_time else float("inf"))
+
+
+def job_field(job):
+    """목록/취소 화면에 쓰는 (제목, 내용)."""
+    user_id = job.kwargs.get("user_id")
+    target = f"<@{user_id}>" if user_id else "알 수 없음"
+    msg = job.kwargs.get("message") or "내용 없음"
+    run_time_str = format_korean_time(job.next_run_time) if job.next_run_time else "일시정지됨"
+    recurrence = job.kwargs.get("recurrence")
+    if recurrence:
+        value = (f"🔁 **반복:** {recurrence}\n⏭️ **다음 알림:** {run_time_str}\n"
+                 f"👤 **대상:** {target}\n💬 **내용:** {msg}")
+    else:
+        value = f"📅 **일시:** {run_time_str}\n👤 **대상:** {target}\n💬 **내용:** {msg}"
+    return f"🆔 번호(ID): {job.id}", truncate(value, EMBED_FIELD_VALUE_LIMIT)
+
 
 def job_scope(interaction):
     """예약을 구분하는 범위: 서버(길드) 단위, DM이면 채널 단위."""
@@ -174,7 +217,7 @@ def count_recurring_jobs(scheduler, scope):
 
 
 # 작업 함수는 모듈 수준 함수, kwargs 는 기본 타입(int/str)만 사용 → SQLAlchemyJobStore 등으로 직렬화 가능
-async def send_ping(channel_id, user_id, message, scope=None, target_name=None, recurrence=None):
+async def send_ping(channel_id, user_id, message, scope=None, target_name=None, recurrence=None, owner_id=None):
     # 이 함수는 DB에 SEND_PING_REF("bot:send_ping") 로 저장됨: 모듈 수준 함수여야 하고 인자는 기본 타입(int/str)만 사용
     try:
         channel = bot.get_channel(channel_id)
@@ -256,6 +299,7 @@ async def schedule_notification(
             "message": 메시지,
             "scope": job_scope(interaction),
             "target_name": 멘션.display_name,
+            "owner_id": interaction.user.id,  # /예약목록·/예약취소 는 본인 예약만
         },
         id=job_id,
         name=f"{멘션.display_name} | {메시지}"
@@ -322,6 +366,7 @@ async def schedule_recurring(interaction, 일시, 멘션, 메시지, current_tim
             "scope": scope,
             "target_name": 멘션.display_name,
             "recurrence": recurrence.description,
+            "owner_id": interaction.user.id,
         },
         id=job_id,
         name=f"{멘션.display_name} | {메시지}"
@@ -338,58 +383,100 @@ async def schedule_recurring(interaction, 일시, 멘션, 메시지, current_tim
         allowed_mentions=CONFIRM_MENTIONS,
     )
 
-# [4] 슬래시 명령어: /예약목록
-@bot.tree.command(name="예약목록", description="현재 대기 중인 알림 예약 목록을 보여줍니다.")
+# [4] 슬래시 명령어: /예약목록 (본인 예약만, 본인에게만 보임)
+@bot.tree.command(name="예약목록", description="내 알림 예약 목록을 보여줍니다.")
 async def list_jobs(interaction: discord.Interaction):
-    # 다른 서버의 예약(대상/내용)이 노출되지 않도록 현재 서버의 예약만 표시
-    scope = job_scope(interaction)
-    jobs = [job for job in bot.scheduler.get_jobs() if job.kwargs.get("scope") == scope]
-    
+    jobs = my_jobs(interaction)
+
     if not jobs:
-        await interaction.response.send_message("📅 현재 대기 중인 알림 예약을 찾을 수 없습니다.", ephemeral=True)
+        await interaction.response.send_message("📅 현재 대기 중인 내 예약이 없습니다.", ephemeral=True)
         return
-    
-    embed = discord.Embed(title="⏰ 현재 알림 예약 목록", color=discord.Color.blue())
-    
+
+    embed = discord.Embed(title="⏰ 내 알림 예약 목록", description=f"총 {len(jobs)}건", color=discord.Color.blue())
     shown = jobs[:EMBED_MAX_FIELDS]
     for job in shown:
-        user_id = job.kwargs.get("user_id")
-        target = f"<@{user_id}>" if user_id else "알 수 없음"
-        msg = job.kwargs.get("message") or "내용 없음"
-
-        run_time_str = format_korean_time(job.next_run_time) if job.next_run_time else "일시정지됨"
-        recurrence = job.kwargs.get("recurrence")
-        
-        if recurrence:
-            value = (f"🔁 **반복:** {recurrence}\n⏭️ **다음 알림:** {run_time_str}\n"
-                     f"👤 **대상:** {target}\n💬 **내용:** {msg}")
-        else:
-            value = f"📅 **일시:** {run_time_str}\n👤 **대상:** {target}\n💬 **내용:** {msg}"
-        embed.add_field(
-            name=f"🆔 번호(ID): {job.id}",
-            value=truncate(value, EMBED_FIELD_VALUE_LIMIT),
-            inline=False
-        )
-
+        name, value = job_field(job)
+        embed.add_field(name=name, value=value, inline=False)
     if len(jobs) > len(shown):
         embed.set_footer(text=f"외 {len(jobs) - len(shown)}건의 예약이 더 있습니다.")
-        
-    await interaction.response.send_message(embed=embed)
 
-# [5] 슬래시 명령어: /예약취소
-@bot.tree.command(name="예약취소", description="예약 번호(ID)를 이용해 알림을 취소합니다.")
-@app_commands.describe(번호="취소할 예약의 4자리 번호(ID)를 입력하세요")
-async def cancel_job(interaction: discord.Interaction, 번호: str):
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+def remove_job_for(interaction, job_id):
+    """본인이 관리할 수 있는 예약이면 지우고 그 예약을, 아니면 None."""
+    job = bot.scheduler.get_job(job_id=job_id)
+    if job is None or not can_manage_job(job, interaction):
+        return None
+    job.remove()
+    return job
+
+
+class CancelSelect(discord.ui.Select):
+    def __init__(self, jobs):
+        options = []
+        for job in jobs[:25]:  # 디스코드 드롭다운 최대 25개
+            when = format_korean_time(job.next_run_time) if job.next_run_time else "일시정지됨"
+            msg = job.kwargs.get("message") or "내용 없음"
+            label = truncate(f"{job.id} · {msg}", 100)
+            desc = truncate(("🔁 " if job.kwargs.get("recurrence") else "") + when, 100)
+            options.append(discord.SelectOption(label=label, value=job.id, description=desc))
+        super().__init__(placeholder="취소할 예약을 선택하세요", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        job_id = self.values[0]
+        job = remove_job_for(interaction, job_id)
+        self.disabled = True
+        await interaction.response.edit_message(view=self.view)
+        if job is None:
+            await interaction.followup.send(f"❌ 예약 `{job_id}`는 이미 실행되었거나 취소되었습니다.", ephemeral=True)
+            return
+        _, value = job_field(job)
+        await interaction.followup.send(f"🗑️ 예약이 취소되었습니다! (`{job_id}`)\n{value}", ephemeral=True)
+
+
+class CancelView(discord.ui.View):
+    def __init__(self, jobs, author_id):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.add_item(CancelSelect(jobs))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ 본인이 실행한 명령어에만 응답할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+# [5] 슬래시 명령어: /예약취소 (번호를 비우면 내 예약 드롭다운)
+@bot.tree.command(name="예약취소", description="내 예약을 취소합니다. 번호를 비우면 목록에서 고를 수 있어요.")
+@app_commands.describe(번호="취소할 예약 번호(ID). 비워두면 내 예약 목록에서 선택")
+async def cancel_job(interaction: discord.Interaction, 번호: Optional[str] = None):
+    if 번호 is None or not 번호.strip():
+        jobs = my_jobs(interaction)
+        if not jobs:
+            await interaction.response.send_message("📅 취소할 수 있는 내 예약이 없습니다.", ephemeral=True)
+            return
+        embed = discord.Embed(title="🗑️ 예약 취소", color=discord.Color.red(),
+                              description="아래 드롭다운에서 취소할 예약을 선택하세요. (60초 후 만료)")
+        for job in jobs[:EMBED_MAX_FIELDS]:
+            name, value = job_field(job)
+            embed.add_field(name=name, value=value, inline=False)
+        await interaction.response.send_message(embed=embed, view=CancelView(jobs, interaction.user.id), ephemeral=True)
+        return
+
     번호 = 번호.strip().lower()
-    job = bot.scheduler.get_job(job_id=번호)
-    
-    # 다른 서버의 예약은 번호를 알아도 취소할 수 없도록 범위 확인
-    if job and job.kwargs.get("scope") == job_scope(interaction):
+    job = remove_job_for(interaction, 번호)
+    if job is not None:
         kind = "반복 알림" if job.kwargs.get("recurrence") else "알림"
-        job.remove()
-        await interaction.response.send_message(f"🗑️ 예약 번호 `{번호}` {kind}이 성공적으로 취소되었습니다!")
+        await interaction.response.send_message(f"🗑️ 예약 번호 `{번호}` {kind}이 성공적으로 취소되었습니다!", ephemeral=True)
     else:
-        await interaction.response.send_message(f"❌ 예약 번호 `{번호}`를 찾을 수 없습니다. 번호를 다시 확인해 주세요.", ephemeral=True)
+        await interaction.response.send_message(
+            f"❌ 내 예약 중에 번호 `{번호}`를 찾을 수 없습니다. `/예약목록`으로 확인해 주세요.", ephemeral=True)
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -407,7 +494,15 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 @bot.event
 async def on_ready():
-    print(f"✅ {bot.user.name} 봇이 로그인 성공했습니다!")
+    print(f"✅ {bot.user.name} 봇이 로그인 성공했습니다! ({BOT_VERSION})")
+
+
+@bot.command(name="sync")
+@commands.is_owner()
+async def sync_commands(ctx):
+    """슬래시 명령어를 현재 서버에 즉시 동기화합니다. (봇 소유자 전용)"""
+    synced = await bot.tree.sync(guild=ctx.guild)
+    await ctx.send(f"✅ {len(synced)}개 명령어를 이 서버에 동기화했습니다.")
 
 # [6] 봇 실제 구동부
 def main():
